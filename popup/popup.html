@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Akshar</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h2>Akshar ✦</h2>
+  <div id="detected-lang" class="lang-badge"></div>
+
+  <div class="setting">
+    <label for="romanization">Romanization</label>
+    <input type="checkbox" id="romanization">
+  </div>
+  <div class="setting">
+    <label for="showOriginal">Show Original Script</label>
+    <input type="checkbox" id="showOriginal">
+  </div>
+  <div class="setting">
+    <label for="originalFirst">Original First</label>
+    <input type="checkbox" id="originalFirst">
+  </div>
+  <div class="setting">
+    <label for="translation">Translation (English)</label>
+    <input type="checkbox" id="translation">
+  </div>
+  <div class="setting">
+    <label for="autoOpenLyrics">Auto-open Lyrics Tab</label>
+    <input type="checkbox" id="autoOpenLyrics">
+  </div>
+
+  <div class="api-key-section">
+    <label for="geminiApiKey">Gemini API Key</label>
+    <input type="password" id="geminiApiKey" placeholder="AIza...">
+    <a href="https://aistudio.google.com/app/apikey" target="_blank">Get a free key →</a>
+  </div>
+
+  <button id="clearCache">Clear Cache</button>
+
+  <script src="popup.js"></script>
+</body>
+</html>

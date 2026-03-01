@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "Akshar",
+  "version": "1.0.0",
+  "description": "Romanize and translate Indian language lyrics on Spotify & YT Music",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://open.spotify.com/*",
+    "https://music.youtube.com/*",
+    "https://generativelanguage.googleapis.com/*",
+    "https://lrclib.net/*"
+  ],
+  "action": {
+    "default_popup": "popup/popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": [
+        "shared/constants.js",
+        "shared/cache.js",
+        "shared/lrclib.js",
+        "shared/gemini.js",
+        "content/detector.js",
+        "content/panel.js",
+        "content/sync.js",
+        "content/main.js",
+        "content/spotify.js"
+      ],
+      "css": ["styles/panel.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://music.youtube.com/*"],
+      "js": [
+        "shared/constants.js",
+        "shared/cache.js",
+        "shared/lrclib.js",
+        "shared/gemini.js",
+        "content/detector.js",
+        "content/panel.js",
+        "content/sync.js",
+        "content/main.js",
+        "content/ytmusic.js"
+      ],
+      "css": ["styles/panel.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  }
+}

@@ -1,0 +1,10 @@
+<!-- icons/icon48.svg — placeholder icon for development
+     Replace with a proper .png before distributing.
+     Chrome extensions require PNG icons; this SVG is here as reference only.
+     To create the PNG: open this file in a browser and screenshot, or use any
+     SVG-to-PNG converter at 48x48 and 128x128. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <rect width="48" height="48" rx="10" fill="#121212"/>
+  <text x="24" y="33" font-family="serif" font-size="28" fill="#ffffff"
+        text-anchor="middle" dominant-baseline="auto">अ</text>
+</svg>
