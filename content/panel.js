@@ -54,6 +54,9 @@ function renderPanel(processedLines, settings) {
     // so we retry here once real content is ready and the DOM slot exists.
     injectPanel(panel);
 
+    // Apply font size from settings via CSS custom property
+    panel.style.setProperty('--akshar-font-scale', (settings.fontSize ?? 100) / 100);
+
     panel.innerHTML = '';
 
     processedLines.forEach((line, i) => {
@@ -85,6 +88,20 @@ function renderPanel(processedLines, settings) {
             t.className = 'akshar-translation';
             t.textContent = line.translation;
             lineEl.appendChild(t);
+        }
+
+        // Click-to-seek: clicking a timed line jumps the video to that timestamp
+        if (line.time !== null) {
+            lineEl.classList.add('akshar-seekable');
+            lineEl.addEventListener('click', () => {
+                const video = document.querySelector('video');
+                if (video) {
+                    video.currentTime = line.time;
+                    // Brief visual flash to confirm the seek
+                    lineEl.classList.add('akshar-seek-flash');
+                    setTimeout(() => lineEl.classList.remove('akshar-seek-flash'), 400);
+                }
+            });
         }
 
         panel.appendChild(lineEl);

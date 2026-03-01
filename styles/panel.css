@@ -1,16 +1,53 @@
 /* styles/panel.css
    Injected into Spotify and YT Music pages.
-   All classes are prefixed with "akshar-" to avoid conflicts with platform styles. */
+   All classes prefixed with "akshar-" to avoid conflicts. */
+
+/* ════════════════════════════════════════════════════════════════════════════
+   YT MUSIC LAYOUT OVERRIDES
+   ════════════════════════════════════════════════════════════════════════════ */
+
+ytmusic-player-page #side-panel.ytmusic-player-page {
+    min-width: 460px !important;
+    max-width: 520px !important;
+    width: 460px !important;
+    flex: 0 0 460px !important;
+    padding-right: 8px !important;
+    box-sizing: border-box !important;
+}
+
+ytmusic-player-page #main-panel.ytmusic-player-page {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+}
+
+ytmusic-player-page #main-panel ytmusic-player,
+ytmusic-player-page #main-panel #player {
+    max-width: 480px !important;
+    margin: 0 auto !important;
+}
+
+ytmusic-player-page #side-panel #tabs-renderer,
+ytmusic-player-page #side-panel ytmusic-tab-renderer {
+    padding-right: 12px !important;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   AKSHAR PANEL
+   ════════════════════════════════════════════════════════════════════════════ */
 
 #akshar-panel {
+    font-size: 16px;
     font-family: inherit;
-    padding: 24px 16px;
+    padding: 16px 24px 60px 20px;
     max-height: 100%;
     height: 100%;
     overflow-y: auto;
     overflow-x: hidden;
     scroll-behavior: smooth;
     scrollbar-width: none;
+    box-sizing: border-box;
+    --akshar-font-scale: 1;
 }
 
 #akshar-panel::-webkit-scrollbar {
@@ -21,70 +58,114 @@
 
 .akshar-line {
     margin-bottom: 24px;
-    opacity: 0.38;
-    transition: opacity 0.25s ease, transform 0.2s ease;
+    opacity: 0.3;
+    transition:
+        opacity 0.3s ease,
+        transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1);
     cursor: default;
+    padding: 3px 6px;
+    border-radius: 8px;
 }
 
 .akshar-line.akshar-active {
     opacity: 1;
-    transform: scale(1.02);
+    transform: scale(1.015);
+    transform-origin: left center;
 }
 
 .akshar-line.akshar-past {
-    opacity: 0.22;
+    opacity: 0.18;
 }
 
 .akshar-line.akshar-future {
-    opacity: 0.38;
+    opacity: 0.30;
 }
 
-/* ── Text styles ──────────────────────────────────────────────────────────── */
+.akshar-seekable {
+    cursor: pointer;
+}
 
+.akshar-seekable:hover {
+    opacity: 0.6 !important;
+}
+
+.akshar-seek-flash {
+    animation: akshar-flash 0.4s ease;
+}
+
+@keyframes akshar-flash {
+    0% {
+        background: rgba(255, 255, 255, 0.12);
+    }
+
+    100% {
+        background: transparent;
+    }
+}
+
+/* ── Text — three clear tiers ─────────────────────────────────────────────── */
+
+/* Tier 1 · Romanized — big bold italic, fills the panel width */
 .akshar-romanized {
-    font-size: 1.15em;
-    font-weight: 600;
-    color: #fff;
-    margin: 0 0 5px 0;
-    line-height: 1.4;
-}
-
-.akshar-original {
-    font-size: 0.9em;
-    color: rgba(255, 255, 255, 0.55);
-    margin: 0 0 4px 0;
-    line-height: 1.4;
-}
-
-.akshar-translation {
-    font-size: 0.82em;
-    color: rgba(255, 255, 255, 0.38);
+    font-size: calc(2.5rem * var(--akshar-font-scale));
+    /* ~35px */
+    font-weight: 800;
     font-style: italic;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    color: #ffffff;
+    margin: 0 0 6px 0;
+}
+
+/* Tier 2 · Original script — warm amber, clearly secondary */
+.akshar-original {
+    font-size: calc(2rem * var(--akshar-font-scale));
+    /* ~18px */
+    font-weight: 400;
+    font-style: normal;
+    line-height: 1.35;
+    color: rgba(255, 195, 100, 0.6);
+    margin: 0 0 4px 0;
+    letter-spacing: 0.01em;
+}
+
+/* Tier 3 · Translation — cool blue-grey, smallest */
+.akshar-translation {
+    font-size: calc(2rem * var(--akshar-font-scale));
+    /* ~15px */
+    font-weight: 400;
+    font-style: italic;
+    line-height: 1.35;
+    color: rgba(150, 180, 220, 0.65);
     margin: 0;
-    line-height: 1.4;
+    letter-spacing: 0.015em;
 }
 
 /* ── Loading skeleton ─────────────────────────────────────────────────────── */
 
 .akshar-loading {
-    padding: 8px 0;
+    padding: 8px 6px;
 }
 
 .akshar-skeleton {
-    height: 16px;
+    height: 28px;
+    border-radius: 6px;
+    margin-bottom: 16px;
+    width: 75%;
     background: linear-gradient(90deg,
-            rgba(255, 255, 255, 0.08) 25%,
-            rgba(255, 255, 255, 0.15) 50%,
-            rgba(255, 255, 255, 0.08) 75%);
+            rgba(255, 255, 255, 0.06) 25%,
+            rgba(255, 255, 255, 0.11) 50%,
+            rgba(255, 255, 255, 0.06) 75%);
     background-size: 200% 100%;
-    animation: akshar-shimmer 1.5s infinite;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    width: 80%;
+    animation: akshar-shimmer 1.6s ease-in-out infinite;
 }
 
 .akshar-skeleton.short {
-    width: 50%;
+    width: 44%;
+    height: 16px;
+    margin-top: -6px;
+    margin-bottom: 20px;
+    opacity: 0.7;
 }
 
 @keyframes akshar-shimmer {
@@ -97,11 +178,13 @@
     }
 }
 
-/* ── Error state ──────────────────────────────────────────────────────────── */
+/* ── Error ────────────────────────────────────────────────────────────────── */
 
 .akshar-error {
-    color: rgba(255, 255, 255, 0.5);
-    font-size: 0.88em;
-    padding: 12px 0;
+    color: rgba(255, 255, 255, 0.38);
+    font-size: 0.9rem;
+    font-style: italic;
+    padding: 20px 6px;
     text-align: center;
+    line-height: 1.6;
 }

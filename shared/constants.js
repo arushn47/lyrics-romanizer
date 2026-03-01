@@ -25,5 +25,6 @@ const SETTINGS_DEFAULTS = {
     originalFirst: false,
     translation: false,
     autoOpenLyrics: false,
+    fontSize: 100,
     geminiApiKey: '',
 };

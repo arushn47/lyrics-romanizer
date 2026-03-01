@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <title>Akshar</title>
   <link rel="stylesheet" href="popup.css">
 </head>
+
 <body>
   <h2>Akshar ✦</h2>
   <div id="detected-lang" class="lang-badge"></div>
@@ -17,7 +19,7 @@
     <label for="showOriginal">Show Original Script</label>
     <input type="checkbox" id="showOriginal">
   </div>
-  <div class="setting">
+  <div class="setting" id="originalFirstRow">
     <label for="originalFirst">Original First</label>
     <input type="checkbox" id="originalFirst">
   </div>
@@ -30,6 +32,16 @@
     <input type="checkbox" id="autoOpenLyrics">
   </div>
 
+  <!-- Font size control -->
+  <div class="font-size-section">
+    <span class="font-size-label">Font Size</span>
+    <div class="font-size-controls">
+      <button id="fontDecrease" class="font-btn" title="Decrease font size">A−</button>
+      <span id="fontSizeDisplay">100%</span>
+      <button id="fontIncrease" class="font-btn" title="Increase font size">A+</button>
+    </div>
+  </div>
+
   <div class="api-key-section">
     <label for="geminiApiKey">Gemini API Key</label>
     <input type="password" id="geminiApiKey" placeholder="AIza...">
@@ -40,4 +52,5 @@
 
   <script src="popup.js"></script>
 </body>
+
 </html>
