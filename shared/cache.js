@@ -4,13 +4,24 @@
 
 console.log('[Akshar] cache.js loaded ✓');
 
+// Bump this whenever the data schema or processing pipeline changes to
+// automatically invalidate stale cached entries.
+const CACHE_VERSION = 2;
+
 async function getCached(key) {
     return new Promise(resolve => {
         chrome.storage.local.get(key, r => {
             const hit = r[key] || null;
             if (hit) {
+                // Reject entries from older cache versions
+                if (hit.v !== CACHE_VERSION) {
+                    console.log(`[Akshar] Cache GET "${key}" → STALE (v${hit.v ?? 1} < v${CACHE_VERSION}) — treating as MISS`);
+                    chrome.storage.local.remove(key);
+                    resolve(null);
+                    return;
+                }
                 const age = Math.round((Date.now() - hit.ts) / 1000);
-                console.log(`[Akshar] Cache GET "${key}" → HIT (${age}s old)`);
+                console.log(`[Akshar] Cache GET "${key}" → HIT (${age}s old, v${CACHE_VERSION})`);
             } else {
                 console.log(`[Akshar] Cache GET "${key}" → MISS`);
             }
@@ -21,8 +32,8 @@ async function getCached(key) {
 
 async function setCached(key, data) {
     return new Promise(resolve => {
-        chrome.storage.local.set({ [key]: { data, ts: Date.now() } }, () => {
-            console.log(`[Akshar] Cache SET "${key}" — ${data.length} lines stored`);
+        chrome.storage.local.set({ [key]: { data, ts: Date.now(), v: CACHE_VERSION } }, () => {
+            console.log(`[Akshar] Cache SET "${key}" — ${data.length} lines stored (v${CACHE_VERSION})`);
             resolve();
         });
     });

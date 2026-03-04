@@ -8,7 +8,8 @@
     "https://open.spotify.com/*",
     "https://music.youtube.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "https://lrclib.net/*"
+    "https://lrclib.net/*",
+    "https://api.mymemory.translated.net/*"
   ],
   "action": {
     "default_popup": "popup/popup.html"
@@ -21,6 +22,8 @@
         "shared/cache.js",
         "shared/lrclib.js",
         "shared/gemini.js",
+        "shared/transliterate.js",
+        "shared/translate-fallback.js",
         "content/detector.js",
         "content/panel.js",
         "content/sync.js",
@@ -37,6 +40,8 @@
         "shared/cache.js",
         "shared/lrclib.js",
         "shared/gemini.js",
+        "shared/transliterate.js",
+        "shared/translate-fallback.js",
         "content/detector.js",
         "content/panel.js",
         "content/sync.js",

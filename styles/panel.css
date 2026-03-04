@@ -7,10 +7,10 @@
    ════════════════════════════════════════════════════════════════════════════ */
 
 ytmusic-player-page #side-panel.ytmusic-player-page {
-    min-width: 460px !important;
-    max-width: 520px !important;
-    width: 460px !important;
-    flex: 0 0 460px !important;
+    min-width: 35vw !important;
+    max-width: 35vw !important;
+    width: 35vw !important;
+    flex: 0 0 35vw !important;
     padding-right: 8px !important;
     box-sizing: border-box !important;
 }
@@ -18,18 +18,27 @@ ytmusic-player-page #side-panel.ytmusic-player-page {
 ytmusic-player-page #main-panel.ytmusic-player-page {
     flex: 1 1 auto !important;
     min-width: 0 !important;
-    max-width: none !important;
-}
-
-ytmusic-player-page #main-panel ytmusic-player,
-ytmusic-player-page #main-panel #player {
-    max-width: 480px !important;
-    margin: 0 auto !important;
 }
 
 ytmusic-player-page #side-panel #tabs-renderer,
 ytmusic-player-page #side-panel ytmusic-tab-renderer {
     padding-right: 12px !important;
+}
+
+/* Tier 3 body-overlay panel (used when YTM has no native lyrics tab content) */
+#akshar-panel[data-tier3="true"] {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scroll-behavior: smooth;
+    padding-top: 4px;
+}
+
+/* Hide YTM's "Lyrics not available" message when Akshar is active */
+ytmusic-message-renderer,
+ytmusic-tab-renderer .empty-state,
+ytmusic-tab-renderer [class*="empty"],
+ytmusic-tab-renderer [class*="message"] {
+    display: none !important;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -58,10 +67,13 @@ ytmusic-player-page #side-panel ytmusic-tab-renderer {
 
 .akshar-line {
     margin-bottom: 24px;
-    opacity: 0.3;
+    /* Default: fully visible — if sync is active, past/future rules dim non-active lines.
+       If the track is unsynced, all lines stay at full opacity (readable). */
+    opacity: 1;
     transition:
         opacity 0.3s ease,
-        transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1);
+        transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1),
+        text-shadow 0.3s ease;
     cursor: default;
     padding: 3px 6px;
     border-radius: 8px;
@@ -71,22 +83,197 @@ ytmusic-player-page #side-panel ytmusic-tab-renderer {
     opacity: 1;
     transform: scale(1.015);
     transform-origin: left center;
+    /* Soft white glow on the active lyric line */
+    text-shadow:
+        0 0 18px rgba(255, 255, 255, 0.55),
+        0 0 40px rgba(255, 255, 255, 0.25);
 }
 
+/* These only take effect when sync is running (setActiveLine has been called) */
 .akshar-line.akshar-past {
     opacity: 0.18;
+    text-shadow: none;
 }
 
 .akshar-line.akshar-future {
     opacity: 0.30;
+    text-shadow: none;
 }
+
+/* ── Instrumental / music-only lines ─────────────────────────────────────── */
+
+.akshar-instrumental {
+    /* Don't scale-up the way lyric lines do when active */
+    min-height: 2.5rem;
+    display: flex;
+    align-items: center;
+}
+
+.akshar-instrumental-symbol {
+    font-size: calc(2.5rem * var(--akshar-font-scale));
+    font-weight: 800;
+    line-height: 1.15;
+    margin: 0;
+    user-select: none;
+    transition: transform 0.3s ease, filter 0.3s ease;
+    /* Default: desaturated and dimmed to a soft white (matches lyric text style) */
+    filter: grayscale(1) brightness(2.5);
+    animation: akshar-float 2.4s ease-in-out infinite;
+}
+
+/* When active: bright white with glow */
+.akshar-line.akshar-active .akshar-instrumental-symbol {
+    filter: grayscale(1) brightness(6) drop-shadow(0 0 12px rgba(255, 255, 255, 0.6));
+    transform: scale(1.25);
+    animation: akshar-float-active 1.4s ease-in-out infinite;
+}
+
+/* Past/future: even dimmer */
+.akshar-line.akshar-past .akshar-instrumental-symbol {
+    filter: grayscale(1) brightness(1);
+}
+
+.akshar-line.akshar-future .akshar-instrumental-symbol {
+    filter: grayscale(1) brightness(1.5);
+}
+
+/* Instrumental lines: don't double-dip on opacity.
+   The parent .akshar-line already handles past/future dimming,
+   so the symbol inside just inherits it like normal lyric text. */
+.akshar-line.akshar-past.akshar-instrumental,
+.akshar-line.akshar-future.akshar-instrumental {
+    opacity: inherit;
+}
+
+/* ── Resume Auto-Scroll Button ────────────────────────────────────────────── */
+
+.akshar-resume-btn {
+    position: fixed;
+    bottom: 100px;
+    right: 32px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(18, 18, 18, 0.75);
+    color: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 24px;
+    padding: 8px 16px 8px 12px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: inherit;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    backdrop-filter: blur(16px) saturate(1.4);
+    -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    box-shadow:
+        0 2px 8px rgba(0, 0, 0, 0.35),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    transition:
+        opacity 0.25s ease,
+        transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1),
+        background 0.2s ease;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(12px) scale(0.95);
+    z-index: 9500;
+}
+
+.akshar-resume-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0) scale(1);
+}
+
+.akshar-resume-btn:hover {
+    background: rgba(30, 30, 30, 0.9);
+    border-color: rgba(255, 255, 255, 0.12);
+    transform: translateY(-1px) scale(1.02);
+}
+
+.akshar-resume-btn:active {
+    transform: scale(0.97);
+}
+
+/* Pulsing dot — indicates sync is still running */
+.akshar-resume-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #4fc3f7;
+    box-shadow: 0 0 6px rgba(79, 195, 247, 0.5);
+    animation: akshar-dot-pulse 1.6s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+@keyframes akshar-dot-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.75); }
+}
+
+.akshar-resume-text {
+    line-height: 1;
+}
+
+/* Dynamic arrow */
+.akshar-resume-arrow {
+    font-size: 15px;
+    line-height: 1;
+    opacity: 0.7;
+    transition: transform 0.25s ease;
+}
+
+.akshar-resume-up .akshar-resume-arrow {
+    transform: translateY(-1px);
+}
+
+.akshar-resume-down .akshar-resume-arrow {
+    transform: translateY(1px);
+}
+
+@keyframes akshar-float {
+
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-4px);
+    }
+}
+
+/* Active float overrides base float so both scale + translate work */
+.akshar-line.akshar-active .akshar-instrumental-symbol {
+    animation: akshar-float-active 1.4s ease-in-out infinite;
+}
+
+@keyframes akshar-float-active {
+
+    0%,
+    100% {
+        transform: scale(1.25) translateY(0);
+    }
+
+    50% {
+        transform: scale(1.25) translateY(-5px);
+    }
+}
+
+/* ── Seekable ─────────────────────────────────────────────────────────────── */
 
 .akshar-seekable {
     cursor: pointer;
 }
 
+/* Hover: boost dim lines but never dim an already-active line */
 .akshar-seekable:hover {
-    opacity: 0.6 !important;
+    opacity: 0.75;
+}
+
+/* Active + hover: preserve full brightness and glow */
+.akshar-seekable.akshar-active:hover {
+    opacity: 1;
 }
 
 .akshar-seek-flash {
@@ -107,10 +294,10 @@ ytmusic-player-page #side-panel ytmusic-tab-renderer {
 
 /* Tier 1 · Romanized — big bold italic, fills the panel width */
 .akshar-romanized {
-    font-size: calc(2.5rem * var(--akshar-font-scale));
+    font-size: calc(2.7rem * var(--akshar-font-scale));
     /* ~35px */
     font-weight: 800;
-    font-style: italic;
+    font-style: normal;
     letter-spacing: -0.02em;
     line-height: 1.15;
     color: #ffffff;
@@ -144,28 +331,27 @@ ytmusic-player-page #side-panel ytmusic-tab-renderer {
 /* ── Loading skeleton ─────────────────────────────────────────────────────── */
 
 .akshar-loading {
-    padding: 8px 6px;
+    padding: 16px 12px;
 }
 
 .akshar-skeleton {
-    height: 28px;
-    border-radius: 6px;
-    margin-bottom: 16px;
+    height: 18px;
+    border-radius: 8px;
+    margin-bottom: 14px;
     width: 75%;
     background: linear-gradient(90deg,
-            rgba(255, 255, 255, 0.06) 25%,
-            rgba(255, 255, 255, 0.11) 50%,
-            rgba(255, 255, 255, 0.06) 75%);
-    background-size: 200% 100%;
-    animation: akshar-shimmer 1.6s ease-in-out infinite;
+            rgba(255, 255, 255, 0.04) 0%,
+            rgba(255, 255, 255, 0.10) 40%,
+            rgba(255, 255, 255, 0.04) 100%);
+    background-size: 300% 100%;
+    animation: akshar-shimmer 2s ease-in-out infinite;
 }
 
 .akshar-skeleton.short {
-    width: 44%;
-    height: 16px;
-    margin-top: -6px;
-    margin-bottom: 20px;
-    opacity: 0.7;
+    height: 12px;
+    margin-top: -4px;
+    margin-bottom: 22px;
+    opacity: 0.5;
 }
 
 @keyframes akshar-shimmer {
