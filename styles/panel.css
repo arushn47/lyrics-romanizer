@@ -364,6 +364,37 @@ ytmusic-tab-renderer [class*="message"] {
     }
 }
 
+/* ── Status bar ──────────────────────────────────────────────────────────── */
+
+.akshar-status {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 18px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-style: italic;
+    color: rgba(255, 255, 255, 0.55);
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    line-height: 1.4;
+    width: fit-content;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.akshar-status[data-type="warn"] {
+    color: rgba(255, 200, 100, 0.75);
+    background: rgba(255, 180, 50, 0.07);
+    border-color: rgba(255, 180, 50, 0.15);
+}
+
+.akshar-status[data-type="done"] {
+    color: rgba(100, 220, 140, 0.75);
+    background: rgba(80, 200, 120, 0.07);
+    border-color: rgba(80, 200, 120, 0.15);
+}
+
 /* ── Error ────────────────────────────────────────────────────────────────── */
 
 .akshar-error {
@@ -373,4 +404,132 @@ ytmusic-tab-renderer [class*="message"] {
     padding: 20px 6px;
     text-align: center;
     line-height: 1.6;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   MOBILE RESPONSIVE — Firefox Android / small viewports
+   ════════════════════════════════════════════════════════════════════════════ */
+
+@media screen and (max-width: 768px) {
+
+    /* ── Disable desktop side-panel width override ─────────────────────────── */
+    /* YTM mobile doesn't have a side panel — it uses full-width tabs below
+       the player. The 35vw override squishes everything on mobile. */
+    ytmusic-player-page #side-panel.ytmusic-player-page {
+        min-width: unset !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        flex: 1 1 auto !important;
+        padding-right: 0 !important;
+    }
+
+    ytmusic-player-page #side-panel #tabs-renderer,
+    ytmusic-player-page #side-panel ytmusic-tab-renderer {
+        padding-right: 0 !important;
+    }
+
+    /* ── Panel: full width, tighter padding ────────────────────────────────── */
+    #akshar-panel {
+        padding: 12px 14px 48px 12px !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box !important;
+    }
+
+    /* Tier 3 overlay: fill entire available width on mobile */
+    #akshar-panel[data-tier3="true"] {
+        left: 0 !important;
+        width: 100vw !important;
+        padding: 8px 14px 48px 12px !important;
+    }
+
+    /* ── Line spacing — tighter on small screens ──────────────────────────── */
+    .akshar-line {
+        margin-bottom: 18px;
+        padding: 2px 4px;
+    }
+
+    /* ── Font sizes — scaled down for mobile readability ──────────────────── */
+    /* Tier 1 · Romanized — from 2.7rem → 1.5rem */
+    .akshar-romanized {
+        font-size: calc(1.5rem * var(--akshar-font-scale)) !important;
+        line-height: 1.25 !important;
+        letter-spacing: -0.01em;
+        margin-bottom: 4px !important;
+    }
+
+    /* Tier 2 · Original script — from 2rem → 1.15rem */
+    .akshar-original {
+        font-size: calc(1.15rem * var(--akshar-font-scale)) !important;
+        line-height: 1.35 !important;
+        margin-bottom: 3px !important;
+    }
+
+    /* Tier 3 · Translation — from 2rem → 1.1rem */
+    .akshar-translation {
+        font-size: calc(1.1rem * var(--akshar-font-scale)) !important;
+        line-height: 1.35 !important;
+    }
+
+    /* Instrumental symbol — smaller on mobile */
+    .akshar-instrumental-symbol {
+        font-size: calc(1.8rem * var(--akshar-font-scale)) !important;
+    }
+
+    .akshar-instrumental {
+        min-height: 1.8rem;
+    }
+
+    /* ── Active line effect — subtler on mobile (no overflow) ─────────────── */
+    .akshar-line.akshar-active {
+        transform: scale(1.008);
+        text-shadow:
+            0 0 12px rgba(255, 255, 255, 0.45),
+            0 0 28px rgba(255, 255, 255, 0.18);
+    }
+
+    /* ── Resume button — bottom-center, touch-friendly ────────────────────── */
+    .akshar-resume-btn {
+        bottom: 80px;
+        right: 50%;
+        transform: translateX(50%) translateY(12px) scale(0.95);
+        padding: 10px 18px 10px 14px;
+        font-size: 12px;
+        border-radius: 20px;
+    }
+
+    .akshar-resume-visible {
+        transform: translateX(50%) translateY(0) scale(1);
+    }
+
+    .akshar-resume-btn:hover {
+        transform: translateX(50%) translateY(-1px) scale(1.02);
+    }
+
+    .akshar-resume-btn:active {
+        transform: translateX(50%) scale(0.97);
+    }
+
+    /* ── Status bar — smaller text ────────────────────────────────────────── */
+    .akshar-status {
+        font-size: 0.68rem;
+        padding: 4px 10px;
+    }
+
+    /* ── Loading skeleton — proportional ──────────────────────────────────── */
+    .akshar-skeleton {
+        height: 14px;
+        margin-bottom: 10px;
+    }
+
+    .akshar-skeleton.short {
+        height: 10px;
+        margin-bottom: 16px;
+    }
+
+    /* ── Error text ───────────────────────────────────────────────────────── */
+    .akshar-error {
+        font-size: 0.8rem;
+        padding: 16px 8px;
+    }
 }

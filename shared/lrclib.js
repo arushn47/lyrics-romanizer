@@ -73,13 +73,13 @@ async function _lrclibGet(title, artist, duration, signal) {
  */
 async function _lrclibSearch(title, artist, duration, signal) {
     // Attempt 1: Title + Artist
-    let parsed = await _doSearchRequest(`${title} ${artist}`, duration, signal);
+    let parsed = await _doSearchRequest(`${title} ${artist}`, duration, signal, artist);
     if (parsed) return parsed;
 
     // Attempt 2: Just Title (fallback for YTM Indian music where movie name is artist)
     if (artist) {
         console.log('[Akshar] LRCLIB search: title+artist failed, trying just title…');
-        parsed = await _doSearchRequest(title, duration, signal);
+        parsed = await _doSearchRequest(title, duration, signal, artist);
         if (parsed) return parsed;
     }
 
@@ -88,8 +88,12 @@ async function _lrclibSearch(title, artist, duration, signal) {
 
 /**
  * Execute the actual search request and parse the first valid result.
+ * @param {string} query - Search query string.
+ * @param {number} duration - Track duration for filtering.
+ * @param {AbortSignal|null} signal
+ * @param {string} [artist] - Artist name to verify results against.
  */
-async function _doSearchRequest(query, duration, signal) {
+async function _doSearchRequest(query, duration, signal, artist = '') {
     const params = new URLSearchParams({ q: query });
     const url = `https://lrclib.net/api/search?${params}`;
     console.log(`[Akshar] LRCLIB search → ${url}`);
@@ -106,18 +110,53 @@ async function _doSearchRequest(query, duration, signal) {
             return null;
         }
 
+        // ── Artist matching helper ───────────────────────────────────────
+        const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const artistNorm = artist ? norm(artist) : '';
+        const artistWords = artist ? artist.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean) : [];
+
+        function artistMatches(entryArtist) {
+            if (!artistNorm || !entryArtist) return false;
+            const entryNorm = norm(entryArtist);
+            // Exact normalized match
+            if (entryNorm === artistNorm) return true;
+            // Check if any artist name word appears in the entry (handles "Maan Panu & Mazaak" vs "Maan Panu")
+            const entryLower = entryArtist.toLowerCase();
+            return artistWords.some(w => w.length > 2 && entryLower.includes(w));
+        }
+
+        // ── Filter results: prefer artist-matched entries ────────────────
+        const artistMatched = artist ? results.filter(e => artistMatches(e.artistName)) : results;
+        const candidates = artistMatched.length > 0 ? artistMatched : [];
+        if (artist && artistMatched.length === 0) {
+            console.log(`[Akshar] LRCLIB search: no results matched artist "${artist}" — skipping (wrong song)`);
+            return null;
+        } else if (artist) {
+            console.log(`[Akshar] LRCLIB search: ${artistMatched.length}/${results.length} results matched artist`);
+        }
+
         // If we have a duration, prefer results within ±15s tolerance
         const TOLERANCE = 15;
         if (duration && duration > 0) {
             console.log(`[Akshar] LRCLIB search: filtering ${results.length} results by duration ~${Math.round(duration)}s (±${TOLERANCE}s)`);
-            const durationMatches = results.filter(e =>
+            const durationMatches = candidates.filter(e =>
                 e.duration && Math.abs(e.duration - duration) <= TOLERANCE
             );
-            // Try duration-matched results first
-            for (const entry of durationMatches) {
+            // Prefer entries with Latin/romanized lyrics over native script.
+            // Pre-romanized lyrics are higher quality and skip the Gemini call.
+            const sortedMatches = [...durationMatches].sort((a, b) => {
+                const aLatin = _isLatin(a.syncedLyrics || a.plainLyrics || '');
+                const bLatin = _isLatin(b.syncedLyrics || b.plainLyrics || '');
+                if (aLatin && !bLatin) return -1;
+                if (!aLatin && bLatin) return 1;
+                return 0;
+            });
+            // Try duration-matched results first (romanized preferred)
+            for (const entry of sortedMatches) {
                 const parsed = _parseLrclibResponse(entry);
                 if (parsed) {
-                    console.log(`[Akshar] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration}s ✓)`);
+                    const isLatin = _isLatin(entry.syncedLyrics || entry.plainLyrics || '');
+                    console.log(`[Akshar] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration}s ✓${isLatin ? ', romanized' : ''})`);
                     return parsed;
                 }
             }
@@ -125,7 +164,7 @@ async function _doSearchRequest(query, duration, signal) {
         }
 
         // Fallback: pick first result that has lyrics (regardless of duration)
-        for (const entry of results) {
+        for (const entry of candidates) {
             const parsed = _parseLrclibResponse(entry);
             if (parsed) {
                 console.log(`[Akshar] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration || '?'}s)`);
@@ -139,6 +178,21 @@ async function _doSearchRequest(query, duration, signal) {
         console.error('[Akshar] LRCLIB search failed:', e);
         return null;
     }
+}
+
+/**
+ * Check if lyrics text is predominantly Latin/ASCII script (i.e. already romanized).
+ * Strips LRC timestamps before checking. Returns true if ≥70% of letter characters
+ * are basic Latin (a-z, A-Z).
+ */
+function _isLatin(text) {
+    // Strip LRC timestamps like [00:07.01]
+    const stripped = text.replace(/\[\d+:\d+\.\d+\]/g, '').replace(/\s+/g, '');
+    if (stripped.length === 0) return false;
+    const latinChars = (stripped.match(/[a-zA-Z]/g) || []).length;
+    const totalLetters = (stripped.match(/\p{L}/gu) || []).length;
+    if (totalLetters === 0) return false;
+    return latinChars / totalLetters >= 0.7;
 }
 
 /**

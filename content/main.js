@@ -6,7 +6,7 @@
 //   shared/lrclib.js     → fetchLRCLIB
 //   shared/gemini.js     → romanizeAndTranslate
 //   content/detector.js  → detectLanguage
-//   content/panel.js     → showLoadingPanel, hideLoadingPanel, showErrorPanel, renderPanel
+//   content/panel.js     → showLoadingPanel, hideLoadingPanel, showErrorPanel, renderPanel, showStatusBar, hideStatusBar
 //   content/sync.js      → startTimedSync
 
 console.log('[Akshar] main.js loaded ✓');
@@ -41,9 +41,11 @@ function reRenderCurrentLyrics() {
     console.log('[Akshar] reRenderCurrentLyrics: re-injecting panel with cached data');
     getSettings().then(settings => {
         renderPanel(currentProcessedLines, settings);
-        // Restart sync if we have timestamps
+        // Restart sync if we have timestamps.
+        // Skip the settle wait — this is a DOM re-inject of the SAME song,
+        // the video is already playing mid-song and needs no settle delay.
         if (currentProcessedLines.some(l => l.time !== null)) {
-            startTimedSync(currentProcessedLines);
+            startTimedSync(currentProcessedLines, { skipSettle: true });
         }
     }).catch(() => { });
 }
@@ -152,8 +154,12 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
         return;
     }
 
+    // Capture video time BEFORE any async work — needed to compute gapless
+    // playback offset when YTM auto-advances without resetting currentTime.
+    const songStartVideoTime = getMainVideo()?.currentTime ?? 0;
+
     console.log(`[Akshar] ── handleSongChange ──────────────────────────────`);
-    console.log(`[Akshar] platform: ${platform} | title: "${title}" | artist: "${artist}" | duration: ${duration}s`);
+    console.log(`[Akshar] platform: ${platform} | title: "${title}" | artist: "${artist}" | duration: ${duration}s | videoTime: ${songStartVideoTime.toFixed(2)}s`);
 
     // ── Step 0: Clear stale data and stop previous sync ───────────────────
     // This prevents the previous song's lyrics from re-appearing when the
@@ -192,7 +198,7 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
         renderPanel(cached.data, settings);
         if (cached.data.some(l => l.time !== null)) {
             console.log('[Akshar] Starting timed sync from cache');
-            startTimedSync(cached.data);
+            startTimedSync(cached.data, { duration, songStartVideoTime });
         }
         return;
     }
@@ -220,6 +226,25 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
         console.log(`[Akshar] DOM fallback: ${rawLines.length} lines (no sync)`);
     }
 
+    // ── Step 4.5: Show raw lyrics immediately ─────────────────────────────────
+    // Display fetched lyrics right away while romanization + translation
+    // processes in the background. Eliminates the 30-40s wait.
+    const preliminaryLines = rawLines.map(line => ({
+        time: line.time,
+        original: line.text,
+        romanized: line.text,  // show original text as placeholder
+        translation: '',
+    }));
+    currentProcessedLines = preliminaryLines;
+    hideLoadingPanel();
+    renderPanel(preliminaryLines, settings);
+    showStatusBar('Romanizing lyrics…', 'info');
+    console.log('[Akshar] Panel rendered with raw lyrics (processing in background)…');
+    if (isSynced) {
+        console.log('[Akshar] Starting timed sync with raw lyrics');
+        startTimedSync(preliminaryLines, { duration, songStartVideoTime });
+    }
+
     // ── Step 5: Detect language ───────────────────────────────────────────────
     // LRCLIB lyrics and YTM DOM-scraped lyrics are often in romanized Latin
     // script — the Indic Unicode detector would return null for these.
@@ -239,7 +264,7 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
 
     if (!lang) {
         console.log('[Akshar] No lyrics and no language detected');
-        showErrorPanel('Lyrics not available for this song.');
+        // Raw lyrics are already displayed — leave them as-is
         return;
     }
 
@@ -247,80 +272,106 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
     const displayLang = lang === 'unknown' ? 'Auto-detected' : LANGUAGE_NAMES[lang];
     chrome.storage.local.set({ detectedLang: displayLang });
 
-    // ── Step 6: Call Gemini (abortable) ──────────────────────────────────────
-    // Key check is here (not at the top) so LRCLIB + detection still log without a key.
+    // ── Step 6: Get romanization + translation (background) ──────────────────
+    // Raw lyrics are already visible and syncing — this upgrades them in-place.
+    let aiResults;
+
     if (!settings.geminiApiKey) {
-        console.warn('[Akshar] ❌ No Gemini API key — using offline romanization + free translation');
+        console.warn('[Akshar] ❌ No Gemini API key — using offline romanization + fallback translation');
+        showStatusBar('No API key — using offline romanization…', 'warn');
         const offlineResults = offlineTransliterate(rawLines.map(l => l.text));
+        // Try MyMemory free translation for supported Indic languages
         let translations = rawLines.map(() => '');
         try {
+            showStatusBar('Translating via MyMemory…', 'info');
             translations = await fallbackTranslate(rawLines.map(l => l.text), lang, signal);
         } catch (e) {
-            if (e.name === 'AbortError') return;
-            console.warn('[Akshar] Free translation also failed:', e.message);
+            if (e.name === 'AbortError') throw e;
+            console.warn('[Akshar] MyMemory fallback failed:', e.message);
         }
-        const fallback = rawLines.map((line, i) => ({
-            time: line.time,
-            original: line.text,
-            romanized: offlineResults[i]?.r ?? line.text,
-            translation: translations[i] || '',
+        aiResults = rawLines.map((_, i) => ({
+            r: offlineResults[i]?.r ?? rawLines[i].text,
+            t: translations[i] || '',
         }));
-        await setCached(cacheKey, fallback);
-        currentProcessedLines = fallback;
-        hideLoadingPanel();
-        renderPanel(fallback, settings);
-        console.log('[Akshar] Panel rendered ✓ (offline romanization + free translation)');
-        if (isSynced) startTimedSync(fallback);
-        return;
-    }
-    const logLang = lang === 'unknown' ? 'Auto-detect' : LANGUAGE_NAMES[lang];
-    console.log(`[Akshar] API key present ✓ — Calling Gemini (${logLang}, ${rawLines.length} lines)…`);
-    let aiResults;
-    try {
-        const plainLines = rawLines.map(l => l.text);
-        aiResults = await romanizeAndTranslate(plainLines, lang, settings.geminiApiKey, signal);
-        console.log(`[Akshar] Gemini ✅ returned ${aiResults.length} entries`);
-    } catch (e) {
-        if (e.name === 'AbortError') {
-            console.log('[Akshar] Gemini request aborted (song changed) — dropping');
-            return;
-        }
-        console.error('[Akshar] ❌ Gemini single-call error:', e);
-        console.log('[Akshar] Retrying with chunked Gemini calls…');
-
-        // ── Chunked retry: smaller batches are less likely to truncate ────
+    } else {
+        const logLang = lang === 'unknown' ? 'Auto-detect' : LANGUAGE_NAMES[lang];
+        console.log(`[Akshar] API key present ✓ — Calling AI (${logLang}, ${rawLines.length} lines)…`);
         try {
             const plainLines = rawLines.map(l => l.text);
-            aiResults = await romanizeAndTranslateChunked(plainLines, lang, settings.geminiApiKey, signal);
-            console.log(`[Akshar] Gemini chunked ✅ returned ${aiResults.length} entries`);
-        } catch (e2) {
-            if (e2.name === 'AbortError') {
-                console.log('[Akshar] Gemini chunked request aborted (song changed) — dropping');
+
+            // Progressive rendering array
+            const cumulativeResults = [];
+            const onProgress = (chunk) => {
+                cumulativeResults.push(...chunk);
+
+                // Construct a partial processed array for immediate UI updates
+                const partialProcessed = rawLines.map((line, i) => ({
+                    time: line.time,
+                    original: line.text,
+                    romanized: cumulativeResults[i]?.r ?? line.text, // fall back to original text if not processed yet
+                    translation: cumulativeResults[i]?.t ?? '',
+                }));
+
+                console.log(`[Akshar] Progressive render: ${cumulativeResults.length}/${rawLines.length} lines`);
+                currentProcessedLines = partialProcessed;
+                renderPanel(partialProcessed, settings);
+                // Keep sync active if we have timestamps
+                if (lastActiveIndex >= 0) setActiveLine(lastActiveIndex);
+            };
+
+            aiResults = await romanizeAndTranslate(plainLines, lang, settings.geminiApiKey, signal, onProgress);
+            console.log(`[Akshar] AI ✅ returned ${aiResults.length} entries`);
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                console.log('[Akshar] AI request aborted (song changed) — dropping');
                 return;
             }
-            console.error('[Akshar] ❌ Gemini chunked also failed:', e2);
-            console.log('[Akshar] Falling back to offline romanization + free translation');
-            const offlineResults = offlineTransliterate(rawLines.map(l => l.text));
-            let translations = rawLines.map(() => '');
+            console.error('[Akshar] ❌ Gemini/Ollama single-call error:', e);
+            console.log('[Akshar] Retrying with chunked Gemini calls…');
+
+            // ── Chunked retry: smaller batches are less likely to truncate ────
             try {
-                translations = await fallbackTranslate(rawLines.map(l => l.text), lang, signal);
-            } catch (e3) {
-                if (e3.name === 'AbortError') return;
-                console.warn('[Akshar] Free translation also failed:', e3.message);
+                const plainLines = rawLines.map(l => l.text);
+                aiResults = await romanizeAndTranslateChunked(plainLines, lang, settings.geminiApiKey, signal);
+                console.log(`[Akshar] Gemini chunked ✅ returned ${aiResults.length} entries`);
+            } catch (e2) {
+                if (e2.name === 'AbortError') {
+                    console.log('[Akshar] Gemini chunked request aborted (song changed) — dropping');
+                    return;
+                }
+                console.error('[Akshar] ❌ Gemini chunked also failed:', e2);
+
+                // ── Ollama fallback: try local model before giving up ────
+                try {
+                    console.log('[Akshar] Trying Ollama as fallback…');
+                    showStatusBar('Gemini quota hit — trying Ollama…', 'warn');
+                    const plainLines2 = rawLines.map(l => l.text);
+                    aiResults = await callOllama(plainLines2, lang === 'unknown' ? 'Indian (auto-detect)' : LANGUAGE_NAMES[lang], signal, onProgress);
+                    console.log(`[Akshar] Ollama fallback ✅ returned ${aiResults.length} entries`);
+                } catch (e3) {
+                    if (e3.name === 'AbortError') {
+                        console.log('[Akshar] Ollama fallback aborted (song changed) — dropping');
+                        return;
+                    }
+                    console.warn('[Akshar] Ollama fallback also failed:', e3.message);
+                    console.log('[Akshar] Falling back to offline romanization + fallback translation');
+                    showStatusBar('AI unavailable — trying offline romanization…', 'warn');
+                    const offlineResults = offlineTransliterate(rawLines.map(l => l.text));
+                    // Try MyMemory free translation for supported Indic languages
+                    let fbTranslations = rawLines.map(() => '');
+                    try {
+                        showStatusBar('Translating via MyMemory…', 'info');
+                        fbTranslations = await fallbackTranslate(rawLines.map(l => l.text), lang, signal);
+                    } catch (e4) {
+                        if (e4.name === 'AbortError') throw e4;
+                        console.warn('[Akshar] MyMemory fallback failed:', e4.message);
+                    }
+                    aiResults = rawLines.map((_, i) => ({
+                        r: offlineResults[i]?.r ?? rawLines[i].text,
+                        t: fbTranslations[i] || '',
+                    }));
+                }
             }
-            const fallback = rawLines.map((line, i) => ({
-                time: line.time,
-                original: line.text,
-                romanized: offlineResults[i]?.r ?? line.text,
-                translation: translations[i] || '',
-            }));
-            await setCached(cacheKey, fallback);
-            currentProcessedLines = fallback;
-            hideLoadingPanel();
-            renderPanel(fallback, settings);
-            console.log('[Akshar] Panel rendered ✓ (offline romanization + free translation)');
-            if (isSynced) startTimedSync(fallback);
-            return;
         }
     }
 
@@ -340,19 +391,16 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
     }));
     console.log('[Akshar] Merged processed lines:', processed.slice(0, 3), '…');
 
-    // ── Step 8: Cache and render ──────────────────────────────────────────────
+    // ── Step 8: Cache and re-render with full data ────────────────────────────
     await setCached(cacheKey, processed);
     console.log('[Akshar] Cached ✓');
     currentProcessedLines = processed;  // keep for live settings re-render
-    hideLoadingPanel();
     renderPanel(processed, settings);
-    console.log('[Akshar] Panel rendered ✓');
-
-    // ── Step 9: Start sync ────────────────────────────────────────────────────
-    if (isSynced) {
-        console.log('[Akshar] Starting timed sync loop');
-        startTimedSync(processed);
-    } else {
-        console.log('[Akshar] No sync timestamps — sync not started');
+    // Restore sync highlight position after re-render
+    if (lastActiveIndex >= 0) {
+        setActiveLine(lastActiveIndex);
     }
+    // Clear the "Romanizing…" status — full data is now shown
+    hideStatusBar();
+    console.log('[Akshar] Panel re-rendered with romanization + translation ✓');
 }

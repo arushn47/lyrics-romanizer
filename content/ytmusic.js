@@ -237,7 +237,7 @@ async function waitForLyricsContainer(maxWaitMs = 3000) {
  */
 function _getYTMDuration() {
     // Try <video> element first
-    const video = document.querySelector('video');
+    const video = getMainVideo();
     if (video && video.duration && isFinite(video.duration) && video.duration > 0) {
         return video.duration;
     }
@@ -277,19 +277,25 @@ function _parseTimeString(str) {
  * Poll for track info with retries — the YTM player bar can take 1-3s to
  * fully render after SPA navigation, so a single delay isn't reliable.
  */
-async function waitForYTMTrackInfo(maxWaitMs = 4000, intervalMs = 300) {
+async function waitForYTMTrackInfo(maxWaitMs = 10000, intervalMs = 300) {
     const deadline = Date.now() + maxWaitMs;
     let attempt = 0;
     while (Date.now() < deadline) {
         attempt++;
         const title = document.querySelector(YTM_SELECTORS.title)?.textContent?.trim();
-        const artist = document.querySelector(YTM_SELECTORS.artist)?.textContent?.trim();
+        // Extract artist from the full byline text ("Artist • Album • Year")
+        // Using the first <a> tag alone can grab the album link during transition
+        // On mobile or some songs, the byline may not have • separators —
+        // in that case, use the entire byline text as the artist name.
+        const bylineEl = document.querySelector('.byline.ytmusic-player-bar');
+        const bylineParts = bylineEl ? bylineEl.textContent.split('•').map(s => s.trim()).filter(Boolean) : [];
+        const artist = bylineParts[0] || '';
         const duration = _getYTMDuration();
         if (title && artist) {
             console.log(`[Akshar] Track info ready after ${attempt} attempt(s): "${title}" by "${artist}" (${duration.toFixed(1)}s)`);
             return { title, artist, duration };
         }
-        console.log(`[Akshar] waitForYTMTrackInfo attempt ${attempt}: title="${title}" artist="${artist}" — retrying in ${intervalMs}ms`);
+        console.log(`[Akshar] waitForYTMTrackInfo attempt ${attempt}: title="${title}" artist="${bylineParts.join(' • ')}" — retrying in ${intervalMs}ms`);
         await new Promise(r => setTimeout(r, intervalMs));
     }
     console.warn('[Akshar] waitForYTMTrackInfo: timed out after', maxWaitMs, 'ms');

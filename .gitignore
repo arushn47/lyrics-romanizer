@@ -22,3 +22,9 @@ Thumbs.db
 
 akshar-IMPLEMENTATION.md
 akshar-PRD.md
+
+# Extension specific
+_metadata/
+*.zip
+akshar-firefox-staging/
+.claude/

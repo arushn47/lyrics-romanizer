@@ -23,7 +23,7 @@ const SETTINGS_DEFAULTS = {
     romanization: true,
     showOriginal: true,
     originalFirst: false,
-    translation: false,
+    translation: true,
     autoOpenLyrics: false,
     fontSize: 100,
     geminiApiKey: '',

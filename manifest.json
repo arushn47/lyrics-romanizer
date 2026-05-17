@@ -3,20 +3,36 @@
   "name": "Akshar",
   "version": "1.0.0",
   "description": "Romanize and translate Indian language lyrics on Spotify & YT Music",
-  "permissions": ["storage", "activeTab"],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "declarativeNetRequest"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_ollama",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
   "host_permissions": [
     "https://open.spotify.com/*",
     "https://music.youtube.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://lrclib.net/*",
-    "https://api.mymemory.translated.net/*"
+    "https://api.mymemory.translated.net/*",
+    "http://localhost:11434/*"
   ],
   "action": {
     "default_popup": "popup/popup.html"
   },
   "content_scripts": [
     {
-      "matches": ["https://open.spotify.com/*"],
+      "matches": [
+        "https://open.spotify.com/*"
+      ],
       "js": [
         "shared/constants.js",
         "shared/cache.js",
@@ -30,11 +46,15 @@
         "content/main.js",
         "content/spotify.js"
       ],
-      "css": ["styles/panel.css"],
+      "css": [
+        "styles/panel.css"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://music.youtube.com/*"],
+      "matches": [
+        "https://music.youtube.com/*"
+      ],
       "js": [
         "shared/constants.js",
         "shared/cache.js",
@@ -48,7 +68,9 @@
         "content/main.js",
         "content/ytmusic.js"
       ],
-      "css": ["styles/panel.css"],
+      "css": [
+        "styles/panel.css"
+      ],
       "run_at": "document_idle"
     }
   ],

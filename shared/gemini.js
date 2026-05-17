@@ -8,6 +8,25 @@ console.log('[Akshar] gemini.js loaded ✓');
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
+const OLLAMA_MODEL = 'akshar-translate';
+const OLLAMA_URL = 'http://localhost:11434/api/generate';
+
+/**
+ * Strip diacritical marks / macrons from romanized text.
+ * Models like gemma3 often produce IAST-style output (ā, ī, ṭ, etc.)
+ * despite being told not to. This normalizes to plain ASCII.
+ */
+function stripDiacritics(text) {
+    // 1. Remove diacritical marks (macrons, dots, etc.)
+    let cleaned = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    // 2. Remove hyphens used as syllable breaks within words (e.g. "pannu-da" → "pannuda")
+    //    but preserve standalone hyphens or legitimate uses like line-initial dashes
+    cleaned = cleaned.replace(/(?<=[a-zA-Z])-(?=[a-zA-Z])/g, '');
+    // 3. Remove apostrophes/ʿain markers used in IAST for Urdu ع (e.g. "diva'en" → "divaen")
+    cleaned = cleaned.replace(/(?<=[a-zA-Z])['\u2018\u2019\u02BC\u02B9](?=[a-zA-Z])/g, '');
+    return cleaned;
+}
+
 /**
  * Attempt to repair truncated JSON arrays from Gemini.
  * Handles: trailing commas, unterminated strings, missing brackets.
@@ -62,17 +81,215 @@ function repairTruncatedJSON(raw) {
 }
 
 /**
- * Romanize and translate an array of lyrics lines in one API call.
+ * Call local Ollama for romanization + translation in chunks.
+ *
+ * @param {string[]} lines    - Plain text lyrics lines.
+ * @param {string}   langName - Human-readable language name.
+ * @param {AbortSignal|null} signal - Abort signal.
+ * @param {Function} onProgress - Callback fired with each parsed chunk: (parsedChunk) => void
+ * @returns {Promise<Array<{r: string, t: string}>>}
+ * @throws On network error (Ollama not running) — caller handles fallback.
+ */
+async function callOllama(lines, langName, signal, onProgress = null) {
+    console.log(`[Akshar] Ollama: romanizing ${lines.length} ${langName} lines in chunks (model=${OLLAMA_MODEL})`);
+    const CHUNK_SIZE = 8; // balance between speed (fewer calls) and responsiveness
+    const allResults = [];
+
+    // Test connection first with a dummy request to fail fast if Ollama is down
+    const pingResult = await new Promise((resolve) => {
+        const port = chrome.runtime.connect({ name: 'ollama' });
+        port.onMessage.addListener((msg) => { resolve(msg); port.disconnect(); });
+
+        // Extract base URL (e.g. http://localhost:11434) from OLLAMA_URL
+        const baseUrl = new URL(OLLAMA_URL).origin;
+        // The service worker defaults to POST, but we can pass a dummy body to /api/tags or just /api/generate without prompt 
+        // Or we can just send it a dummy generate request that fails gracefully.
+        port.postMessage({
+            url: baseUrl + '/api/tags',
+            method: 'GET'
+        });
+    });
+    // The dummy fetch will fail if Ollama is not running, triggering the fallback immediately.
+    if (pingResult.error) throw new Error(`[Akshar] Ollama not running: ${pingResult.error}`);
+
+    for (let i = 0; i < lines.length; i += CHUNK_SIZE) {
+        if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+        const chunk = lines.slice(i, i + CHUNK_SIZE);
+        const prompt = `Romanize and translate ${langName} song lyrics to English.
+
+Return a JSON array with exactly ${chunk.length} objects. Each object: {"r": "romanized", "t": "english translation"}
+
+Examples:
+Input: ["तुम ही हो"]
+Output: [{"r": "tum hi ho", "t": "you are the one"}]
+
+Input: ["என் உயிரே", "வா வா"]
+Output: [{"r": "en uyire", "t": "my life/soul"}, {"r": "vaa vaa", "t": "come come"}]
+
+Input: ["Oh where would I be"]
+Output: [{"r": "Oh where would I be", "t": ""}]
+
+Input: [""]
+Output: [{"r": "", "t": ""}]
+
+Rules:
+- No hyphens between syllables (pannuda not pannu-da)
+- No diacritics (aa not ā, ii not ī)
+- Colloquial/slang lyrics: translate the feeling not literal words
+- Tamil "da/di" = casual suffix, not a word to translate
+- Lines already in English/Latin script → keep r as-is, set t to ""
+- Empty lines → {"r": "", "t": ""}
+- Output EXACTLY ${chunk.length} objects, nothing else
+
+Input: ${JSON.stringify(chunk)}
+Output:`;
+
+        // Route through background service worker to bypass CORS.
+        // We now request a streaming response so the UI updates token-by-token
+        let fullResponse = "";
+        let currentlyParsedCount = 0;
+        let lastProgressCount = 0;  // entries sent to onProgress so far
+        const PROGRESS_BATCH = 5;   // only fire onProgress every N new entries
+
+        await new Promise((resolve, reject) => {
+            const port = chrome.runtime.connect({ name: 'ollama' });
+            port.onMessage.addListener((msg) => {
+                if (msg.error) {
+                    port.disconnect();
+                    reject(new Error(msg.error));
+                    return;
+                }
+
+                if (msg.stream && msg.chunk) {
+                    // Ollama streams JSON objects with a "response" field
+                    try {
+                        const lines = msg.chunk.trim().split('\\n');
+                        for (const line of lines) {
+                            if (!line) continue;
+                            const piece = JSON.parse(line);
+                            if (piece.response) {
+                                fullResponse += piece.response;
+
+                                // Every time we get enough characters, try to parse what we have so far
+                                // The LLM is generating a JSON array like: [{"r":"...", "t":"..."}, {"r":"...", "t":"..."}]
+                                // We can regex extract complete objects from the accumulating string.
+                                const matches = [...fullResponse.matchAll(/{"r":\s*"(?:[^"\\]|\\.)*",\s*"t":\s*"(?:[^"\\]|\\.)*"}/g)];
+
+                                if (matches.length > currentlyParsedCount) {
+                                    currentlyParsedCount = matches.length;
+                                    // Only fire onProgress when we've accumulated enough new entries
+                                    if (onProgress && (currentlyParsedCount - lastProgressCount) >= PROGRESS_BATCH) {
+                                        try {
+                                            const partialParsed = JSON.parse('[' + matches.map(m => m[0]).join(',') + ']');
+                                            const delta = partialParsed.slice(lastProgressCount);
+                                            for (const entry of delta) {
+                                                if (entry.r) entry.r = stripDiacritics(entry.r);
+                                            }
+                                            onProgress(delta);
+                                            lastProgressCount = currentlyParsedCount;
+                                        } catch (e) { } // ignore mid-stream parse errors
+                                    }
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        // Ignore incomplete JSON stream chunk errors
+                    }
+                } else if (msg.done || (msg.data && msg.data.done)) {
+                    port.disconnect();
+                    resolve();
+                }
+            });
+            port.postMessage({
+                url: OLLAMA_URL,
+                stream: true,
+                body: JSON.stringify({ model: OLLAMA_MODEL, prompt, stream: true }),
+            });
+        });
+
+        const cleaned = fullResponse.replace(/```json|```/g, '').trim();
+        let parsedChunk;
+
+        try {
+            parsedChunk = JSON.parse(cleaned);
+        } catch (e) {
+            // Try repairing truncated/malformed JSON before giving up
+            try {
+                parsedChunk = repairTruncatedJSON(cleaned);
+                console.log('[Akshar] Ollama: chunk JSON repaired successfully');
+            } catch (e2) {
+                // Last resort: extract individual objects via regex
+                // This salvages valid entries even when overall JSON is broken
+                // (e.g. unescaped quotes inside a value)
+                const regexMatches = [...cleaned.matchAll(/\{\s*"r"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"t"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/g)];
+                if (regexMatches.length > 0) {
+                    parsedChunk = regexMatches.map(m => ({ r: m[1].replace(/\\(.)/g, '$1'), t: m[2].replace(/\\(.)/g, '$1') }));
+                    console.log(`[Akshar] Ollama: chunk JSON repaired via regex — extracted ${parsedChunk.length}/${chunk.length} entries`);
+                } else {
+                    console.warn('[Akshar] Ollama: chunk parse failed, using raw fallback', e);
+                    parsedChunk = chunk.map(l => ({ r: l, t: '' }));
+                }
+            }
+        }
+
+        if (parsedChunk.length < chunk.length) {
+            while (parsedChunk.length < chunk.length) {
+                parsedChunk.push({ r: chunk[parsedChunk.length], t: '' });
+            }
+        }
+        // Slice if it returns too many
+        if (parsedChunk.length > chunk.length) {
+            parsedChunk = parsedChunk.slice(0, chunk.length);
+        }
+
+        // Strip diacritics from romanization (model often ignores prompt instructions)
+        for (const entry of parsedChunk) {
+            if (entry.r) entry.r = stripDiacritics(entry.r);
+        }
+
+        console.log(`[Akshar] Ollama: chunk ${i / CHUNK_SIZE + 1} parsed ${parsedChunk.length} entries ✓`);
+        allResults.push(...parsedChunk);
+
+        // Send any remaining entries that weren't flushed during streaming
+        if (onProgress && parsedChunk.length > lastProgressCount) {
+            onProgress(parsedChunk.slice(lastProgressCount));
+        }
+    }
+
+    return allResults;
+}
+
+/**
+ * Romanize and translate an array of lyrics lines.
+ * Tries Ollama first (local, unlimited), then falls back to Gemini (cloud).
  *
  * @param {string[]} lines    - Plain text lyrics lines (no timestamps).
  * @param {string}   langCode - ISO code from detectLanguage() e.g. 'hi'.
  * @param {string}   apiKey   - User's Google AI Studio key.
  * @param {AbortSignal|null} signal - AbortController signal for cancellation.
+ * @param {Function} onProgress - Callback for progressive UI updates.
  * @returns {Promise<Array<{r: string, t: string}>>}
  * @throws Will throw on non-abort network/API errors so caller can show error UI.
  */
-async function romanizeAndTranslate(lines, langCode, apiKey, signal = null) {
+async function romanizeAndTranslate(lines, langCode, apiKey, signal = null, onProgress = null) {
     const langName = langCode === 'unknown' ? 'Indian (auto-detect)' : LANGUAGE_NAMES[langCode];
+
+    // ── STEP 1: No API key → Ollama only ──
+    if (!apiKey) {
+        try {
+            return await callOllama(lines, langName, signal, onProgress);
+        } catch (e) {
+            if (e.name === 'AbortError') throw e;
+            console.warn('[Akshar] Ollama unavailable:', e.message);
+            throw new Error(
+                'Romanization failed: Ollama is not running and no Gemini API key is set. ' +
+                'Start Ollama or add a key in extension settings.'
+            );
+        }
+    }
+
+    // ── STEP 2: API key present → Gemini first, Ollama fallback ──
     console.log(`[Akshar] Gemini: romanizing ${lines.length} ${langName} lines`);
     console.log(`[Akshar] Gemini: model = ${GEMINI_MODEL}`);
 
@@ -83,7 +300,13 @@ Given the following ${langName} song lyrics (one line per entry in the JSON arra
 - "t": natural English translation of that line
 
 Rules:
+- EVERY non-empty line MUST have both "r" and "t" filled in. Never leave "t" empty for lines that contain text.
+- If the input is already in Roman/Latin script, keep "r" as-is and still provide the English translation in "t".
 - Use natural, familiar romanization conventions (how a native speaker pronounces it)
+- Do NOT use hyphens to break syllables — write words as continuous strings
+- Do NOT use diacritical marks or macrons — use plain ASCII only (e.g. "aa" not "ā")
+- Translate each line accurately based on the actual meaning of each word
+- Respect gendered verb forms in Hindi/Punjabi: "-gi"/"-egi" = she/her, "-ga"/"-ega" = he/him (e.g. "degi" = "she will", "dega" = "he will")
 - If the language is unknown/auto-detect, identify the Indian language (e.g. Tamil, Telugu, Hindi, Malayalam) from the romanized words and translate it to English.
 - CRITICAL: The input has EXACTLY ${lines.length} lines. Your output MUST have EXACTLY ${lines.length} entries. Do NOT add, merge, or skip any lines.
 - Maintain a strict 1:1 mapping: output[0] corresponds to input[0], output[1] to input[1], etc.
@@ -112,8 +335,18 @@ ${JSON.stringify(lines)}`;
     console.log(`[Akshar] Gemini response: ${res.status} ${res.statusText}`);
 
     if (res.status === 429) {
-        // Rate limited — extract retry delay and try once more
         const errBody = await res.text();
+
+        // Check if this is a DAILY quota exhaustion — retrying is pointless
+        const isDailyExhausted = errBody.includes('PerDayPerProject');
+        if (isDailyExhausted) {
+            console.error('[Akshar] Gemini daily quota exhausted — skipping retry');
+            const err = new Error('[Akshar] Gemini rate limited. Start Ollama (ollama serve) for unlimited use.');
+            err.quotaExhausted = true;
+            throw err;
+        }
+
+        // Per-minute rate limit — wait and retry once
         const delayMatch = errBody.match(/"retryDelay"\s*:\s*"(\d+)/);
         const waitSec = delayMatch ? parseInt(delayMatch[1], 10) + 2 : 30;
         console.warn(`[Akshar] Gemini 429 rate limited — retrying in ${waitSec}s…`);
@@ -160,6 +393,10 @@ ${JSON.stringify(lines)}`;
 
     try {
         const parsed = repairTruncatedJSON(raw);
+        // Strip diacritics from romanization
+        for (const entry of parsed) {
+            if (entry.r) entry.r = stripDiacritics(entry.r);
+        }
         if (parsed.length < lines.length) {
             console.warn(`[Akshar] Gemini returned ${parsed.length}/${lines.length} lines (truncated) — padding remaining`);
             while (parsed.length < lines.length) {
@@ -203,6 +440,11 @@ async function romanizeAndTranslateChunked(lines, langCode, apiKey, signal = nul
             results.push(...chunkResult);
         } catch (e) {
             if (e.name === 'AbortError') throw e;
+            // If quota is exhausted, stop immediately — no point trying more chunks
+            if (e.quotaExhausted) {
+                console.error('[Akshar] Gemini quota exhausted — aborting all remaining chunks');
+                throw e;
+            }
             console.warn(`[Akshar] Gemini chunk ${chunkIdx} failed: ${e.message} — padding with originals`);
             // Pad this chunk with original text (no translation)
             for (const line of chunk) {

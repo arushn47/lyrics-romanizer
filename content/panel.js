@@ -4,6 +4,23 @@
 
 console.log('[Akshar] panel.js loaded ✓');
 
+/**
+ * Get the main player <video> element, skipping YTM's muted embed preview.
+ * YTM has two video elements: the main audio player and a muted embed.
+ * document.querySelector('video') might return the wrong one.
+ */
+function getMainVideo() {
+    // Prefer the video inside YTM's #movie_player container
+    const playerVideo = document.querySelector('#movie_player video, ytmusic-player video');
+    if (playerVideo) return playerVideo;
+    // Fallback: first non-muted video, or just the first video
+    const videos = document.querySelectorAll('video');
+    for (const v of videos) {
+        if (!v.muted) return v;
+    }
+    return videos[0] || null;
+}
+
 // ── Auto-scroll pause / resume state ────────────────────────────────────────
 let autoScrollPaused = false;
 let isProgrammaticScroll = false;  // true while we're calling scrollIntoView
@@ -36,10 +53,13 @@ function updateResumeDirection() {
     }
 }
 
-/** Show the floating "return to current line" button — only on Lyrics tab */
+/** Show the floating "return to current line" button — only on Lyrics tab with synced lyrics */
 function showResumeButton() {
-    // Only show when our lyrics panel is actually visible
-    if (!document.getElementById('akshar-panel')) return;
+    // Only show when synced lyrics are actively being played
+    if (typeof isSyncRunning === 'function' && !isSyncRunning()) return;
+    // Only show when our lyrics panel is actually visible and not loading
+    const panel = document.getElementById('akshar-panel');
+    if (!panel || panel.querySelector('.akshar-loading')) return;
     // Also check Lyrics tab is active (ytmusic.js exposes this)
     if (typeof isLyricsTabActive === 'function' && !isLyricsTabActive()) return;
 
@@ -164,6 +184,32 @@ function hideLoadingPanel() {
     }
 }
 
+/**
+ * Show a non-blocking status pill at the top of the panel.
+ * Replaces any existing status message.
+ * @param {string} msg  - Short status text.
+ * @param {'info'|'warn'|'done'} [type='info']
+ */
+function showStatusBar(msg, type = 'info') {
+    const panel = document.getElementById('akshar-panel');
+    if (!panel) return;
+    let bar = panel.querySelector('.akshar-status');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.className = 'akshar-status';
+        panel.prepend(bar);
+    }
+    bar.dataset.type = type;
+    bar.textContent = msg;
+    bar.style.display = '';
+}
+
+function hideStatusBar() {
+    document.getElementById('akshar-panel')
+        ?.querySelector('.akshar-status')
+        ?.remove();
+}
+
 function showErrorPanel(msg) {
     let panel = document.getElementById('akshar-panel');
     if (!panel) {
@@ -171,7 +217,11 @@ function showErrorPanel(msg) {
         panel.id = 'akshar-panel';
     }
     injectPanel(panel);
-    panel.innerHTML = `<div class="akshar-error">${msg}</div>`;
+    panel.textContent = '';
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'akshar-error';
+    errorDiv.textContent = msg;
+    panel.appendChild(errorDiv);
     console.log('[Akshar] showErrorPanel:', msg);
 }
 
@@ -245,7 +295,7 @@ function renderPanel(processedLines, settings) {
         if (line.time !== null) {
             lineEl.classList.add('akshar-seekable');
             lineEl.addEventListener('click', () => {
-                const video = document.querySelector('video');
+                const video = getMainVideo();
                 if (video) {
                     video.currentTime = line.time;
                     // Brief visual flash to confirm the seek
@@ -441,11 +491,16 @@ function _injectPanelCore(panel) {
                 const bottomOffset = playerBar ? playerBar.getBoundingClientRect().height + 1 : 73;
                 const panelHeight = window.innerHeight - panelTop - bottomOffset;
 
+                // Mobile: use full viewport width instead of the tab rect
+                const isMobile = window.innerWidth <= 768;
+                const panelLeft = isMobile ? 0 : rect.left;
+                const panelWidth = isMobile ? window.innerWidth : rect.width;
+
                 panel.style.cssText = [
                     'position:fixed',
                     `top:${panelTop}px`,
-                    `left:${rect.left}px`,
-                    `width:${rect.width}px`,
+                    `left:${panelLeft}px`,
+                    `width:${panelWidth}px`,
                     `height:${panelHeight}px`,
                     'overflow-y:auto',
                     'z-index:9000',
@@ -503,9 +558,12 @@ function _startTier3Repositioner(panel, tabRenderer) {
         const playerBar = document.querySelector('ytmusic-player-bar');
         const bottomOffset = playerBar ? playerBar.getBoundingClientRect().height + 1 : 73;
 
+        // Mobile: use full viewport width
+        const isMobile = window.innerWidth <= 768;
+
         p.style.top = panelTop + 'px';
-        p.style.left = rect.left + 'px';
-        p.style.width = rect.width + 'px';
+        p.style.left = (isMobile ? 0 : rect.left) + 'px';
+        p.style.width = (isMobile ? window.innerWidth : rect.width) + 'px';
         p.style.height = (window.innerHeight - panelTop - bottomOffset) + 'px';
     }, 1000);
 }
