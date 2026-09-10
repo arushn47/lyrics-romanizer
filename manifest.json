@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Akshar",
-  "version": "1.0.0",
-  "description": "Romanize and translate Indian language lyrics on Spotify & YT Music",
+  "name": "tunescript",
+  "version": "1.2.0",
+  "description": "Romanize and translate Tamil, Malayalam & other Indian lyrics on Spotify & YT Music",
   "permissions": [
     "storage",
     "activeTab",
@@ -25,8 +25,20 @@
     "https://api.mymemory.translated.net/*",
     "http://localhost:11434/*"
   ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
-    "default_popup": "popup/popup.html"
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
@@ -50,6 +62,16 @@
         "styles/panel.css"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://music.youtube.com/*"
+      ],
+      "js": [
+        "content/ytmusic-bridge.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
     },
     {
       "matches": [

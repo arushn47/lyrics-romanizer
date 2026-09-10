@@ -1,3 +1,3 @@
-ollama create akshar-translate -f akshar.modelfile
-echo akshar-translate model created successfully
+﻿ollama create tunescript-translate -f tunescript.modelfile
+echo tunescript-translate model created successfully
 pause

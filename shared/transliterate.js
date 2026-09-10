@@ -3,7 +3,7 @@
 // Used as a fallback when Gemini API is unavailable (rate-limited, no key, etc.).
 // Not as polished as AI romanization but provides readable Latin output instantly.
 
-console.log('[Akshar] transliterate.js loaded ✓');
+console.log('[Tunescript] transliterate.js loaded ✓');
 
 // ── Tamil Unicode → Latin ────────────────────────────────────────────────────
 const TAMIL = {
@@ -119,6 +119,18 @@ const MALAYALAM = {
 // Build a combined lookup for all scripts
 const ALL_MAPS = Object.assign({}, TAMIL, DEVANAGARI, TELUGU, MALAYALAM);
 
+const VIRAMAS = new Set(['\u094D', '\u0BCD', '\u0C4D', '\u0D4D']);
+const VOWEL_SIGNS = new Set([
+    // Tamil
+    '\u0BBE', '\u0BBF', '\u0BC0', '\u0BC1', '\u0BC2', '\u0BC6', '\u0BC7', '\u0BC8', '\u0BCA', '\u0BCB', '\u0BCC',
+    // Devanagari
+    '\u093E', '\u093F', '\u0940', '\u0941', '\u0942', '\u0943', '\u0947', '\u0948', '\u094B', '\u094C',
+    // Telugu
+    '\u0C3E', '\u0C3F', '\u0C40', '\u0C41', '\u0C42', '\u0C46', '\u0C47', '\u0C48', '\u0C4A', '\u0C4B', '\u0C4C',
+    // Malayalam
+    '\u0D3E', '\u0D3F', '\u0D40', '\u0D41', '\u0D42', '\u0D46', '\u0D47', '\u0D48', '\u0D4A', '\u0D4B', '\u0D4C',
+]);
+
 /**
  * Transliterate a single line of Indic text to Latin script.
  * Falls back to the original character if no mapping exists.
@@ -130,7 +142,18 @@ function transliterateLine(text) {
     let result = '';
     for (let i = 0; i < text.length; i++) {
         const ch = text[i];
-        if (ALL_MAPS.hasOwnProperty(ch)) {
+        if (VIRAMAS.has(ch)) {
+            // Virama / pulli suppresses the inherent 'a' of preceding consonant
+            if (result.endsWith('a')) {
+                result = result.slice(0, -1);
+            }
+        } else if (VOWEL_SIGNS.has(ch)) {
+            // Combining vowel mark replaces the inherent 'a' of preceding consonant
+            if (result.endsWith('a')) {
+                result = result.slice(0, -1);
+            }
+            result += ALL_MAPS[ch] || '';
+        } else if (ALL_MAPS.hasOwnProperty(ch)) {
             result += ALL_MAPS[ch];
         } else {
             result += ch;
@@ -147,7 +170,7 @@ function transliterateLine(text) {
  * @returns {Array<{r: string, t: string}>} Romanized lines (no translation).
  */
 function offlineTransliterate(lines) {
-    console.log(`[Akshar] Offline transliteration: ${lines.length} lines`);
+    console.log(`[Tunescript] Offline transliteration: ${lines.length} lines`);
     return lines.map(line => ({
         r: transliterateLine(line),
         t: '', // No translation available offline

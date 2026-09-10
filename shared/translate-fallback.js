@@ -4,7 +4,7 @@
 // Supports Indic-script lyrics (hi, ta, ml, kn, te) → English.
 // For romanized (Latin) lyrics, translation is not possible without AI.
 
-console.log('[Akshar] translate-fallback.js loaded ✓');
+console.log('[Tunescript] translate-fallback.js loaded ✓');
 
 // MyMemory free API — no key needed, ~1000 words/day anonymous, 10k with email.
 const MYMEMORY_URL = 'https://api.mymemory.translated.net/get';
@@ -49,12 +49,12 @@ async function fallbackTranslate(lines, langCode, signal = null) {
     // Only works for known Indic languages (MyMemory needs proper lang codes)
     const supportedLangs = ['hi', 'ta', 'ml', 'kn', 'te'];
     if (!supportedLangs.includes(langCode)) {
-        console.log(`[Akshar] Fallback translate: language "${langCode}" not supported — skipping`);
+        console.log(`[Tunescript] Fallback translate: language "${langCode}" not supported — skipping`);
         return lines.map(() => '');
     }
 
     const langPair = `${langCode}|en`;
-    console.log(`[Akshar] Fallback translate: ${lines.length} lines, ${langPair}`);
+    console.log(`[Tunescript] Fallback translate: ${lines.length} lines, ${langPair}`);
 
     // ── Batch lines into chunks of ~450 chars (MyMemory limit ≈ 500) ────────
     const CHAR_LIMIT = 450;
@@ -93,7 +93,7 @@ async function fallbackTranslate(lines, langCode, signal = null) {
         batches.push({ startIdx: currentStart, count: currentCount, text: currentText });
     }
 
-    console.log(`[Akshar] Fallback translate: ${batches.length} API batches`);
+    console.log(`[Tunescript] Fallback translate: ${batches.length} API batches`);
 
     // ── Send batches (sequentially to respect rate limits) ────────────────────
     const results = new Array(lines.length).fill('');
@@ -105,8 +105,8 @@ async function fallbackTranslate(lines, langCode, signal = null) {
         try {
             const translated = await myMemoryTranslate(batch.text, langPair, signal);
             if (translated) {
-                // Split back into individual lines
-                const parts = translated.split(/\s*\|\|\|\s*/);
+                // Split back into individual lines (handles engines that compress ||| into || or |)
+                const parts = translated.split(/\s*\|{1,3}\s*|\s*\n\s*/);
                 for (let j = 0; j < batch.count; j++) {
                     const idx = batch.startIdx + j;
                     results[idx] = parts[j]?.trim() || '';
@@ -114,7 +114,7 @@ async function fallbackTranslate(lines, langCode, signal = null) {
             }
         } catch (e) {
             if (e.name === 'AbortError') throw e;
-            console.warn(`[Akshar] Fallback translate: batch ${b + 1} failed:`, e.message);
+            console.warn(`[Tunescript] Fallback translate: batch ${b + 1} failed:`, e.message);
         }
 
         // Small delay between batches to avoid rate limiting
@@ -124,6 +124,6 @@ async function fallbackTranslate(lines, langCode, signal = null) {
     }
 
     const translated = results.filter(r => r !== '').length;
-    console.log(`[Akshar] Fallback translate: ${translated}/${lines.length} lines translated`);
+    console.log(`[Tunescript] Fallback translate: ${translated}/${lines.length} lines translated`);
     return results;
 }

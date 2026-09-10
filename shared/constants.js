@@ -1,7 +1,7 @@
-// shared/constants.js
+﻿// shared/constants.js
 // Script Unicode ranges for auto-detection and language metadata
 
-console.log('[Akshar] constants.js loaded ✓');
+console.log('[Tunescript] constants.js loaded ✓');
 
 const SCRIPT_RANGES = {
     hi: [[0x0900, 0x097F]],   // Devanagari — Hindi

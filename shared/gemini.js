@@ -3,12 +3,16 @@
 // Single call per song: returns romanization + translation for every line.
 // Relies on LANGUAGE_NAMES from shared/constants.js (loaded first).
 
-console.log('[Akshar] gemini.js loaded ✓');
+console.log('[Tunescript] gemini.js loaded ✓');
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+let activeGeminiModel = GEMINI_MODELS[0];
 
-const OLLAMA_MODEL = 'akshar-translate';
+function getGeminiUrl(model = activeGeminiModel) {
+    return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+}
+
+const OLLAMA_MODEL = 'tunescript-translate';
 const OLLAMA_URL = 'http://localhost:11434/api/generate';
 
 /**
@@ -91,7 +95,7 @@ function repairTruncatedJSON(raw) {
  * @throws On network error (Ollama not running) — caller handles fallback.
  */
 async function callOllama(lines, langName, signal, onProgress = null) {
-    console.log(`[Akshar] Ollama: romanizing ${lines.length} ${langName} lines in chunks (model=${OLLAMA_MODEL})`);
+    console.log(`[Tunescript] Ollama: romanizing ${lines.length} ${langName} lines in chunks (model=${OLLAMA_MODEL})`);
     const CHUNK_SIZE = 8; // balance between speed (fewer calls) and responsiveness
     const allResults = [];
 
@@ -110,7 +114,7 @@ async function callOllama(lines, langName, signal, onProgress = null) {
         });
     });
     // The dummy fetch will fail if Ollama is not running, triggering the fallback immediately.
-    if (pingResult.error) throw new Error(`[Akshar] Ollama not running: ${pingResult.error}`);
+    if (pingResult.error) throw new Error(`[Tunescript] Ollama not running: ${pingResult.error}`);
 
     for (let i = 0; i < lines.length; i += CHUNK_SIZE) {
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
@@ -217,7 +221,7 @@ Output:`;
             // Try repairing truncated/malformed JSON before giving up
             try {
                 parsedChunk = repairTruncatedJSON(cleaned);
-                console.log('[Akshar] Ollama: chunk JSON repaired successfully');
+                console.log('[Tunescript] Ollama: chunk JSON repaired successfully');
             } catch (e2) {
                 // Last resort: extract individual objects via regex
                 // This salvages valid entries even when overall JSON is broken
@@ -225,9 +229,9 @@ Output:`;
                 const regexMatches = [...cleaned.matchAll(/\{\s*"r"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"t"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/g)];
                 if (regexMatches.length > 0) {
                     parsedChunk = regexMatches.map(m => ({ r: m[1].replace(/\\(.)/g, '$1'), t: m[2].replace(/\\(.)/g, '$1') }));
-                    console.log(`[Akshar] Ollama: chunk JSON repaired via regex — extracted ${parsedChunk.length}/${chunk.length} entries`);
+                    console.log(`[Tunescript] Ollama: chunk JSON repaired via regex — extracted ${parsedChunk.length}/${chunk.length} entries`);
                 } else {
-                    console.warn('[Akshar] Ollama: chunk parse failed, using raw fallback', e);
+                    console.warn('[Tunescript] Ollama: chunk parse failed, using raw fallback', e);
                     parsedChunk = chunk.map(l => ({ r: l, t: '' }));
                 }
             }
@@ -248,7 +252,7 @@ Output:`;
             if (entry.r) entry.r = stripDiacritics(entry.r);
         }
 
-        console.log(`[Akshar] Ollama: chunk ${i / CHUNK_SIZE + 1} parsed ${parsedChunk.length} entries ✓`);
+        console.log(`[Tunescript] Ollama: chunk ${i / CHUNK_SIZE + 1} parsed ${parsedChunk.length} entries ✓`);
         allResults.push(...parsedChunk);
 
         // Send any remaining entries that weren't flushed during streaming
@@ -281,7 +285,7 @@ async function romanizeAndTranslate(lines, langCode, apiKey, signal = null, onPr
             return await callOllama(lines, langName, signal, onProgress);
         } catch (e) {
             if (e.name === 'AbortError') throw e;
-            console.warn('[Akshar] Ollama unavailable:', e.message);
+            console.warn('[Tunescript] Ollama unavailable:', e.message);
             throw new Error(
                 'Romanization failed: Ollama is not running and no Gemini API key is set. ' +
                 'Start Ollama or add a key in extension settings.'
@@ -290,8 +294,7 @@ async function romanizeAndTranslate(lines, langCode, apiKey, signal = null, onPr
     }
 
     // ── STEP 2: API key present → Gemini first, Ollama fallback ──
-    console.log(`[Akshar] Gemini: romanizing ${lines.length} ${langName} lines`);
-    console.log(`[Akshar] Gemini: model = ${GEMINI_MODEL}`);
+    console.log(`[Tunescript] Gemini: romanizing ${lines.length} ${langName} lines`);
 
     let prompt = `You are a lyrics romanization and translation assistant.
 
@@ -316,23 +319,40 @@ Rules:
 Input (${lines.length} lines):
 ${JSON.stringify(lines)}`;
 
-    console.log(`[Akshar] Gemini: sending request to ${GEMINI_URL}`);
+    let res = null;
+    let successfulModel = activeGeminiModel;
+    const candidateModels = [activeGeminiModel, ...GEMINI_MODELS.filter(m => m !== activeGeminiModel)];
 
-    let res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-        method: 'POST',
-        signal,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-                temperature: 0.1,
-                maxOutputTokens: 65536,
-                responseMimeType: 'application/json',
-            },
-        }),
-    });
+    for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {
+        const model = candidateModels[mIdx];
+        const url = getGeminiUrl(model);
+        console.log(`[Tunescript] Gemini: sending request to ${url} (model=${model})`);
 
-    console.log(`[Akshar] Gemini response: ${res.status} ${res.statusText}`);
+        res = await fetch(`${url}?key=${apiKey}`, {
+            method: 'POST',
+            signal,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                    temperature: 0.1,
+                    maxOutputTokens: 65536,
+                    responseMimeType: 'application/json',
+                },
+            }),
+        });
+
+        console.log(`[Tunescript] Gemini (${model}) response: ${res.status} ${res.statusText}`);
+
+        if (res.status === 404 && mIdx < candidateModels.length - 1) {
+            console.warn(`[Tunescript] Gemini model "${model}" not found (404) — trying fallback candidate…`);
+            continue;
+        }
+
+        successfulModel = model;
+        activeGeminiModel = model;
+        break;
+    }
 
     if (res.status === 429) {
         const errBody = await res.text();
@@ -340,8 +360,8 @@ ${JSON.stringify(lines)}`;
         // Check if this is a DAILY quota exhaustion — retrying is pointless
         const isDailyExhausted = errBody.includes('PerDayPerProject');
         if (isDailyExhausted) {
-            console.error('[Akshar] Gemini daily quota exhausted — skipping retry');
-            const err = new Error('[Akshar] Gemini rate limited. Start Ollama (ollama serve) for unlimited use.');
+            console.error('[Tunescript] Gemini daily quota exhausted — skipping retry');
+            const err = new Error('[Tunescript] Gemini rate limited. Start Ollama (ollama serve) for unlimited use.');
             err.quotaExhausted = true;
             throw err;
         }
@@ -349,12 +369,12 @@ ${JSON.stringify(lines)}`;
         // Per-minute rate limit — wait and retry once
         const delayMatch = errBody.match(/"retryDelay"\s*:\s*"(\d+)/);
         const waitSec = delayMatch ? parseInt(delayMatch[1], 10) + 2 : 30;
-        console.warn(`[Akshar] Gemini 429 rate limited — retrying in ${waitSec}s…`);
+        console.warn(`[Tunescript] Gemini 429 rate limited — retrying in ${waitSec}s…`);
 
         await new Promise(r => setTimeout(r, waitSec * 1000));
         if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-        const retryRes = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+        const retryRes = await fetch(`${getGeminiUrl(successfulModel)}?key=${apiKey}`, {
             method: 'POST',
             signal,
             headers: { 'Content-Type': 'application/json' },
@@ -363,17 +383,17 @@ ${JSON.stringify(lines)}`;
                 generationConfig: { temperature: 0.1, maxOutputTokens: 65536, responseMimeType: 'application/json' },
             }),
         });
-        console.log(`[Akshar] Gemini retry response: ${retryRes.status}`);
+        console.log(`[Tunescript] Gemini retry response: ${retryRes.status}`);
         if (!retryRes.ok) {
             const errText = await retryRes.text();
-            console.error(`[Akshar] Gemini retry also failed ${retryRes.status}:`, errText);
-            throw new Error(`[Akshar] Gemini API ${retryRes.status}: ${errText}`);
+            console.error(`[Tunescript] Gemini retry also failed ${retryRes.status}:`, errText);
+            throw new Error(`[Tunescript] Gemini API ${retryRes.status}: ${errText}`);
         }
         res = retryRes;
     } else if (!res.ok) {
         const errText = await res.text();
-        console.error(`[Akshar] Gemini API error ${res.status}:`, errText);
-        throw new Error(`[Akshar] Gemini API ${res.status}: ${errText}`);
+        console.error(`[Tunescript] Gemini API error ${res.status}:`, errText);
+        throw new Error(`[Tunescript] Gemini API ${res.status}: ${errText}`);
     }
 
     const data = await res.json();
@@ -382,13 +402,13 @@ ${JSON.stringify(lines)}`;
     const finishReason = candidate?.finishReason;
 
     if (!raw) {
-        console.error('[Akshar] Gemini: unexpected response structure', data);
-        throw new Error('[Akshar] Gemini returned no text content');
+        console.error('[Tunescript] Gemini: unexpected response structure', data);
+        throw new Error('[Tunescript] Gemini returned no text content');
     }
 
-    console.log('[Akshar] Gemini raw response (first 200 chars):', raw.slice(0, 200));
+    console.log('[Tunescript] Gemini raw response (first 200 chars):', raw.slice(0, 200));
     if (finishReason && finishReason !== 'STOP') {
-        console.warn(`[Akshar] Gemini finishReason: ${finishReason} — response may be truncated`);
+        console.warn(`[Tunescript] Gemini finishReason: ${finishReason} — response may be truncated`);
     }
 
     try {
@@ -398,16 +418,16 @@ ${JSON.stringify(lines)}`;
             if (entry.r) entry.r = stripDiacritics(entry.r);
         }
         if (parsed.length < lines.length) {
-            console.warn(`[Akshar] Gemini returned ${parsed.length}/${lines.length} lines (truncated) — padding remaining`);
+            console.warn(`[Tunescript] Gemini returned ${parsed.length}/${lines.length} lines (truncated) — padding remaining`);
             while (parsed.length < lines.length) {
                 parsed.push({ r: lines[parsed.length], t: '' });
             }
         }
-        console.log(`[Akshar] Gemini: parsed ${parsed.length} entries ✓`);
+        console.log(`[Tunescript] Gemini: parsed ${parsed.length} entries ✓`);
         return parsed;
     } catch (e) {
-        console.error('[Akshar] Gemini: JSON repair failed.', e.message);
-        console.error('[Akshar] Gemini: raw text was:', raw.slice(0, 1000));
+        console.error('[Tunescript] Gemini: JSON repair failed.', e.message);
+        console.error('[Tunescript] Gemini: raw text was:', raw.slice(0, 1000));
         throw e;
     }
 }
@@ -424,7 +444,7 @@ ${JSON.stringify(lines)}`;
  * @returns {Promise<Array<{r: string, t: string}>>}
  */
 async function romanizeAndTranslateChunked(lines, langCode, apiKey, signal = null, chunkSize = 15) {
-    console.log(`[Akshar] Gemini chunked: splitting ${lines.length} lines into chunks of ${chunkSize}`);
+    console.log(`[Tunescript] Gemini chunked: splitting ${lines.length} lines into chunks of ${chunkSize}`);
     const results = [];
 
     for (let i = 0; i < lines.length; i += chunkSize) {
@@ -433,7 +453,7 @@ async function romanizeAndTranslateChunked(lines, langCode, apiKey, signal = nul
         const chunk = lines.slice(i, i + chunkSize);
         const chunkIdx = Math.floor(i / chunkSize) + 1;
         const totalChunks = Math.ceil(lines.length / chunkSize);
-        console.log(`[Akshar] Gemini chunk ${chunkIdx}/${totalChunks}: lines ${i + 1}–${i + chunk.length}`);
+        console.log(`[Tunescript] Gemini chunk ${chunkIdx}/${totalChunks}: lines ${i + 1}–${i + chunk.length}`);
 
         try {
             const chunkResult = await romanizeAndTranslate(chunk, langCode, apiKey, signal);
@@ -442,10 +462,10 @@ async function romanizeAndTranslateChunked(lines, langCode, apiKey, signal = nul
             if (e.name === 'AbortError') throw e;
             // If quota is exhausted, stop immediately — no point trying more chunks
             if (e.quotaExhausted) {
-                console.error('[Akshar] Gemini quota exhausted — aborting all remaining chunks');
+                console.error('[Tunescript] Gemini quota exhausted — aborting all remaining chunks');
                 throw e;
             }
-            console.warn(`[Akshar] Gemini chunk ${chunkIdx} failed: ${e.message} — padding with originals`);
+            console.warn(`[Tunescript] Gemini chunk ${chunkIdx} failed: ${e.message} — padding with originals`);
             // Pad this chunk with original text (no translation)
             for (const line of chunk) {
                 results.push({ r: line, t: '' });
@@ -453,6 +473,6 @@ async function romanizeAndTranslateChunked(lines, langCode, apiKey, signal = nul
         }
     }
 
-    console.log(`[Akshar] Gemini chunked: done — ${results.length} total entries`);
+    console.log(`[Tunescript] Gemini chunked: done — ${results.length} total entries`);
     return results;
 }

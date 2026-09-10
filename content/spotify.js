@@ -98,3 +98,22 @@ function startSpotifySync() {
 
     return observer;
 }
+
+// ── Re-trigger when forced from popup ─────────────────────────────────────────
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.forceSongReload) {
+        console.log('[Tunescript] Spotify force reload triggered');
+        lastSpotifyTrackKey = null;
+        if (typeof showLoadingPanel === 'function') showLoadingPanel();
+        const info = getSpotifyTrackInfo();
+        if (info) {
+            const cacheKey = makeCacheKey('spotify', info.title, info.artist);
+            clearSongCache(cacheKey);
+            handleSongChange({
+                ...info,
+                platform: 'spotify',
+                getDomLyrics: getDomLyricsSpotify,
+            });
+        }
+    }
+});

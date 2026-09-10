@@ -1,9 +1,9 @@
-// shared/lrclib.js
+﻿// shared/lrclib.js
 // Fetches synced (LRC) or plain lyrics from LRCLIB.net — free, no auth.
 // LRCLIB is the single source of truth for BOTH lyrics text AND timestamps.
 // Duration is passed to help the API pick the right version (live, remix, etc.).
 
-console.log('[Akshar] lrclib.js loaded ✓');
+console.log('[Tunescript] lrclib.js loaded ✓');
 
 /**
  * Fetch lyrics from LRCLIB.
@@ -22,7 +22,7 @@ async function fetchLRCLIB(title, artist, duration = 0, signal = null) {
         if (result) return result;
         // Duration mismatch is the most common cause of 404.
         // Retry without duration before falling back to search.
-        console.log('[Akshar] LRCLIB: retrying without duration…');
+        console.log('[Tunescript] LRCLIB: retrying without duration…');
         const resultNoDur = await _lrclibGet(title, artist, 0, signal);
         if (resultNoDur) return resultNoDur;
     } else {
@@ -31,7 +31,7 @@ async function fetchLRCLIB(title, artist, duration = 0, signal = null) {
     }
 
     // ── Attempt 3: Search endpoint (fuzzy) ───────────────────────────────────
-    console.log('[Akshar] LRCLIB: exact match failed — trying search endpoint…');
+    console.log('[Tunescript] LRCLIB: exact match failed — trying search endpoint…');
     return _lrclibSearch(title, artist, duration, signal);
 }
 
@@ -46,23 +46,23 @@ async function _lrclibGet(title, artist, duration, signal) {
     if (duration) params.set('duration', Math.round(duration));
 
     const url = `https://lrclib.net/api/get?${params}`;
-    console.log(`[Akshar] LRCLIB fetch → ${url}`);
+    console.log(`[Tunescript] LRCLIB fetch → ${url}`);
 
     try {
         const res = await fetch(url, { signal });
-        console.log(`[Akshar] LRCLIB response: ${res.status} ${res.statusText}`);
+        console.log(`[Tunescript] LRCLIB response: ${res.status} ${res.statusText}`);
 
         if (!res.ok) {
-            console.log('[Akshar] LRCLIB: non-OK response — no lyrics found');
+            console.log('[Tunescript] LRCLIB: non-OK response — no lyrics found');
             return null;
         }
         return _parseLrclibResponse(await res.json());
     } catch (e) {
         if (e.name === 'AbortError') {
-            console.log('[Akshar] LRCLIB fetch aborted (song changed)');
+            console.log('[Tunescript] LRCLIB fetch aborted (song changed)');
             return null;
         }
-        console.error('[Akshar] LRCLIB fetch failed:', e);
+        console.error('[Tunescript] LRCLIB fetch failed:', e);
         return null;
     }
 }
@@ -78,7 +78,7 @@ async function _lrclibSearch(title, artist, duration, signal) {
 
     // Attempt 2: Just Title (fallback for YTM Indian music where movie name is artist)
     if (artist) {
-        console.log('[Akshar] LRCLIB search: title+artist failed, trying just title…');
+        console.log('[Tunescript] LRCLIB search: title+artist failed, trying just title…');
         parsed = await _doSearchRequest(title, duration, signal, artist);
         if (parsed) return parsed;
     }
@@ -96,17 +96,17 @@ async function _lrclibSearch(title, artist, duration, signal) {
 async function _doSearchRequest(query, duration, signal, artist = '') {
     const params = new URLSearchParams({ q: query });
     const url = `https://lrclib.net/api/search?${params}`;
-    console.log(`[Akshar] LRCLIB search → ${url}`);
+    console.log(`[Tunescript] LRCLIB search → ${url}`);
 
     try {
         const res = await fetch(url, { signal });
-        console.log(`[Akshar] LRCLIB search response: ${res.status} ${res.statusText}`);
+        console.log(`[Tunescript] LRCLIB search response: ${res.status} ${res.statusText}`);
 
         if (!res.ok) return null;
 
         const results = await res.json();
         if (!Array.isArray(results) || results.length === 0) {
-            console.log('[Akshar] LRCLIB search: no results');
+            console.log('[Tunescript] LRCLIB search: no results');
             return null;
         }
 
@@ -129,16 +129,16 @@ async function _doSearchRequest(query, duration, signal, artist = '') {
         const artistMatched = artist ? results.filter(e => artistMatches(e.artistName)) : results;
         const candidates = artistMatched.length > 0 ? artistMatched : [];
         if (artist && artistMatched.length === 0) {
-            console.log(`[Akshar] LRCLIB search: no results matched artist "${artist}" — skipping (wrong song)`);
+            console.log(`[Tunescript] LRCLIB search: no results matched artist "${artist}" — skipping (wrong song)`);
             return null;
         } else if (artist) {
-            console.log(`[Akshar] LRCLIB search: ${artistMatched.length}/${results.length} results matched artist`);
+            console.log(`[Tunescript] LRCLIB search: ${artistMatched.length}/${results.length} results matched artist`);
         }
 
         // If we have a duration, prefer results within ±15s tolerance
         const TOLERANCE = 15;
         if (duration && duration > 0) {
-            console.log(`[Akshar] LRCLIB search: filtering ${results.length} results by duration ~${Math.round(duration)}s (±${TOLERANCE}s)`);
+            console.log(`[Tunescript] LRCLIB search: filtering ${results.length} results by duration ~${Math.round(duration)}s (±${TOLERANCE}s)`);
             const durationMatches = candidates.filter(e =>
                 e.duration && Math.abs(e.duration - duration) <= TOLERANCE
             );
@@ -156,26 +156,26 @@ async function _doSearchRequest(query, duration, signal, artist = '') {
                 const parsed = _parseLrclibResponse(entry);
                 if (parsed) {
                     const isLatin = _isLatin(entry.syncedLyrics || entry.plainLyrics || '');
-                    console.log(`[Akshar] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration}s ✓${isLatin ? ', romanized' : ''})`);
+                    console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration}s ✓${isLatin ? ', romanized' : ''})`);
                     return parsed;
                 }
             }
-            console.log('[Akshar] LRCLIB search: no duration-matched results had lyrics, trying any…');
+            console.log('[Tunescript] LRCLIB search: no duration-matched results had lyrics, trying any…');
         }
 
         // Fallback: pick first result that has lyrics (regardless of duration)
         for (const entry of candidates) {
             const parsed = _parseLrclibResponse(entry);
             if (parsed) {
-                console.log(`[Akshar] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration || '?'}s)`);
+                console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration || '?'}s)`);
                 return parsed;
             }
         }
-        console.log('[Akshar] LRCLIB search: results found but none had lyrics');
+        console.log('[Tunescript] LRCLIB search: results found but none had lyrics');
         return null;
     } catch (e) {
         if (e.name === 'AbortError') return null;
-        console.error('[Akshar] LRCLIB search failed:', e);
+        console.error('[Tunescript] LRCLIB search failed:', e);
         return null;
     }
 }
@@ -201,14 +201,14 @@ function _isLatin(text) {
 function _parseLrclibResponse(data) {
     if (data.syncedLyrics) {
         const lines = parseLRC(data.syncedLyrics);
-        console.log(`[Akshar] LRCLIB: synced lyrics — ${lines.length} lines`);
+        console.log(`[Tunescript] LRCLIB: synced lyrics — ${lines.length} lines`);
         return { synced: true, lines };
     }
     if (data.plainLyrics) {
         const lines = data.plainLyrics
             .split('\n')
             .map(text => ({ time: null, text }));
-        console.log(`[Akshar] LRCLIB: plain lyrics — ${lines.length} lines`);
+        console.log(`[Tunescript] LRCLIB: plain lyrics — ${lines.length} lines`);
         return { synced: false, lines };
     }
     return null;

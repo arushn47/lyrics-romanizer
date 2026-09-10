@@ -1,9 +1,9 @@
-// content/detector.js
+﻿// content/detector.js
 // Zero-API language detection from Unicode code-point ranges.
 // Relies on SCRIPT_RANGES defined in shared/constants.js (loaded first via manifest).
 // Returns the ISO language code of the dominant script, or null if unsupported.
 
-console.log('[Akshar] detector.js loaded ✓');
+console.log('[Tunescript] detector.js loaded ✓');
 
 /**
  * Detect the dominant Indic script in a block of lyrics text.
@@ -24,10 +24,10 @@ function detectLanguage(text) {
     }
 
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    console.log('[Akshar] detectLanguage scores:', counts);
+    console.log('[Tunescript] detectLanguage scores:', counts);
 
     // Require at least 5 matching chars to avoid false positives
     const result = sorted.length > 0 && sorted[0][1] > 5 ? sorted[0][0] : null;
-    console.log('[Akshar] detectLanguage result:', result ? LANGUAGE_NAMES[result] : 'null (not Indic)');
+    console.log('[Tunescript] detectLanguage result:', result ? LANGUAGE_NAMES[result] : 'null (not Indic)');
     return result;
 }

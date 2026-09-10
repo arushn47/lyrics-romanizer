@@ -1,8 +1,8 @@
 // content/panel.js
 // Lyrics panel renderer — shared UI for both Spotify and YT Music.
-// Creates, updates, and injects the #akshar-panel DOM element.
+// Creates, updates, and injects the #tunescript-panel DOM element.
 
-console.log('[Akshar] panel.js loaded ✓');
+console.log('[Tunescript] panel.js loaded ✓');
 
 /**
  * Get the main player <video> element, skipping YTM's muted embed preview.
@@ -29,27 +29,27 @@ let scrollPanelEl = null;          // cached panel ref for the scroll listener
 
 /** Update the resume button arrow direction based on where the active line is. */
 function updateResumeDirection() {
-    const btn = document.getElementById('akshar-resume-btn');
+    const btn = document.getElementById('tunescript-resume-btn');
     if (!btn || lastActiveIndex < 0) return;
 
-    const activeLine = document.querySelector(`.akshar-line[data-index="${lastActiveIndex}"]`);
+    const activeLine = document.querySelector(`.tunescript-line[data-index="${lastActiveIndex}"]`);
     if (!activeLine) return;
 
-    const panel = document.getElementById('akshar-panel');
+    const panel = document.getElementById('tunescript-panel');
     const scrollContainer = panel || document.documentElement;
     const containerRect = scrollContainer.getBoundingClientRect();
     const lineRect = activeLine.getBoundingClientRect();
 
     // Line is above viewport → arrow up; below → arrow down
-    const arrow = btn.querySelector('.akshar-resume-arrow');
+    const arrow = btn.querySelector('.tunescript-resume-arrow');
     if (lineRect.top < containerRect.top) {
         arrow.textContent = '↑';
-        btn.classList.add('akshar-resume-up');
-        btn.classList.remove('akshar-resume-down');
+        btn.classList.add('tunescript-resume-up');
+        btn.classList.remove('tunescript-resume-down');
     } else {
         arrow.textContent = '↓';
-        btn.classList.add('akshar-resume-down');
-        btn.classList.remove('akshar-resume-up');
+        btn.classList.add('tunescript-resume-down');
+        btn.classList.remove('tunescript-resume-up');
     }
 }
 
@@ -58,28 +58,28 @@ function showResumeButton() {
     // Only show when synced lyrics are actively being played
     if (typeof isSyncRunning === 'function' && !isSyncRunning()) return;
     // Only show when our lyrics panel is actually visible and not loading
-    const panel = document.getElementById('akshar-panel');
-    if (!panel || panel.querySelector('.akshar-loading')) return;
+    const panel = document.getElementById('tunescript-panel');
+    if (!panel || panel.querySelector('.tunescript-loading')) return;
     // Also check Lyrics tab is active (ytmusic.js exposes this)
     if (typeof isLyricsTabActive === 'function' && !isLyricsTabActive()) return;
 
-    let btn = document.getElementById('akshar-resume-btn');
+    let btn = document.getElementById('tunescript-resume-btn');
     if (btn) {
-        btn.classList.add('akshar-resume-visible');
+        btn.classList.add('tunescript-resume-visible');
         updateResumeDirection();
         return;
     }
 
     btn = document.createElement('button');
-    btn.id = 'akshar-resume-btn';
-    btn.className = 'akshar-resume-btn akshar-resume-visible';
-    btn.innerHTML = '<span class="akshar-resume-dot"></span><span class="akshar-resume-text">Back to sync</span><span class="akshar-resume-arrow">↓</span>';
+    btn.id = 'tunescript-resume-btn';
+    btn.className = 'tunescript-resume-btn tunescript-resume-visible';
+    btn.innerHTML = '<span class="tunescript-resume-dot"></span><span class="tunescript-resume-text">Back to sync</span><span class="tunescript-resume-arrow">↓</span>';
     btn.addEventListener('click', () => {
         autoScrollPaused = false;
         hideResumeButton();
         if (lastActiveIndex >= 0) {
             isProgrammaticScroll = true;
-            document.querySelector(`.akshar-line[data-index="${lastActiveIndex}"]`)
+            document.querySelector(`.tunescript-line[data-index="${lastActiveIndex}"]`)
                 ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             setTimeout(() => { isProgrammaticScroll = false; }, 800);
         }
@@ -92,7 +92,7 @@ function showResumeButton() {
 }
 
 function hideResumeButton() {
-    document.getElementById('akshar-resume-btn')?.classList.remove('akshar-resume-visible');
+    document.getElementById('tunescript-resume-btn')?.classList.remove('tunescript-resume-visible');
 }
 
 /** Attach a scroll listener to the panel (call after each inject). */
@@ -136,15 +136,15 @@ function resetScrollState() {
 }
 
 function _cleanupTier3State() {
-    if (window.__aksharTier3Repo) {
-        clearInterval(window.__aksharTier3Repo);
-        window.__aksharTier3Repo = null;
+    if (window.__tunescriptTier3Repo) {
+        clearInterval(window.__tunescriptTier3Repo);
+        window.__tunescriptTier3Repo = null;
     }
-    window.__aksharTier3Setup = false;
+    window.__tunescriptTier3Setup = false;
 }
 
 function showLoadingPanel() {
-    const existing = document.getElementById('akshar-panel');
+    const existing = document.getElementById('tunescript-panel');
     if (existing) {
         // If this was a Tier 3 panel, clean up all global state
         if (existing.dataset.tier3 === 'true') {
@@ -154,33 +154,33 @@ function showLoadingPanel() {
     }
 
     const panel = document.createElement('div');
-    panel.id = 'akshar-panel';
+    panel.id = 'tunescript-panel';
     // More skeleton rows + varying widths = realistic lyrics feel + perceived speed
     panel.innerHTML = `
-    <div class="akshar-loading">
-      <div class="akshar-skeleton" style="width:80%"></div>
-      <div class="akshar-skeleton short" style="width:50%"></div>
-      <div class="akshar-skeleton" style="width:65%"></div>
-      <div class="akshar-skeleton short" style="width:35%"></div>
-      <div class="akshar-skeleton" style="width:90%"></div>
-      <div class="akshar-skeleton short" style="width:55%"></div>
-      <div class="akshar-skeleton" style="width:72%"></div>
-      <div class="akshar-skeleton short" style="width:40%"></div>
-      <div class="akshar-skeleton" style="width:85%"></div>
-      <div class="akshar-skeleton short" style="width:48%"></div>
-      <div class="akshar-skeleton" style="width:60%"></div>
-      <div class="akshar-skeleton short" style="width:42%"></div>
+    <div class="tunescript-loading">
+      <div class="tunescript-skeleton" style="width:80%"></div>
+      <div class="tunescript-skeleton short" style="width:50%"></div>
+      <div class="tunescript-skeleton" style="width:65%"></div>
+      <div class="tunescript-skeleton short" style="width:35%"></div>
+      <div class="tunescript-skeleton" style="width:90%"></div>
+      <div class="tunescript-skeleton short" style="width:55%"></div>
+      <div class="tunescript-skeleton" style="width:72%"></div>
+      <div class="tunescript-skeleton short" style="width:40%"></div>
+      <div class="tunescript-skeleton" style="width:85%"></div>
+      <div class="tunescript-skeleton short" style="width:48%"></div>
+      <div class="tunescript-skeleton" style="width:60%"></div>
+      <div class="tunescript-skeleton short" style="width:42%"></div>
     </div>
   `;
     injectPanel(panel);
-    console.log('[Akshar] showLoadingPanel: skeleton injected');
+    console.log('[Tunescript] showLoadingPanel: skeleton injected');
 }
 
 function hideLoadingPanel() {
-    const panel = document.getElementById('akshar-panel');
+    const panel = document.getElementById('tunescript-panel');
     if (panel) {
-        panel.querySelector('.akshar-loading')?.remove();
-        console.log('[Akshar] hideLoadingPanel: skeleton removed');
+        panel.querySelector('.tunescript-loading')?.remove();
+        console.log('[Tunescript] hideLoadingPanel: skeleton removed');
     }
 }
 
@@ -191,12 +191,12 @@ function hideLoadingPanel() {
  * @param {'info'|'warn'|'done'} [type='info']
  */
 function showStatusBar(msg, type = 'info') {
-    const panel = document.getElementById('akshar-panel');
+    const panel = document.getElementById('tunescript-panel');
     if (!panel) return;
-    let bar = panel.querySelector('.akshar-status');
+    let bar = panel.querySelector('.tunescript-status');
     if (!bar) {
         bar = document.createElement('div');
-        bar.className = 'akshar-status';
+        bar.className = 'tunescript-status';
         panel.prepend(bar);
     }
     bar.dataset.type = type;
@@ -205,31 +205,31 @@ function showStatusBar(msg, type = 'info') {
 }
 
 function hideStatusBar() {
-    document.getElementById('akshar-panel')
-        ?.querySelector('.akshar-status')
+    document.getElementById('tunescript-panel')
+        ?.querySelector('.tunescript-status')
         ?.remove();
 }
 
 function showErrorPanel(msg) {
-    let panel = document.getElementById('akshar-panel');
+    let panel = document.getElementById('tunescript-panel');
     if (!panel) {
         panel = document.createElement('div');
-        panel.id = 'akshar-panel';
+        panel.id = 'tunescript-panel';
     }
     injectPanel(panel);
     panel.textContent = '';
     const errorDiv = document.createElement('div');
-    errorDiv.className = 'akshar-error';
+    errorDiv.className = 'tunescript-error';
     errorDiv.textContent = msg;
     panel.appendChild(errorDiv);
-    console.log('[Akshar] showErrorPanel:', msg);
+    console.log('[Tunescript] showErrorPanel:', msg);
 }
 
-function renderPanel(processedLines, settings) {
-    let panel = document.getElementById('akshar-panel');
+function renderPanel(processedLines, settings, duration) {
+    let panel = document.getElementById('tunescript-panel');
     if (!panel) {
         panel = document.createElement('div');
-        panel.id = 'akshar-panel';
+        panel.id = 'tunescript-panel';
     }
 
     // Always try to (re-)inject into the correct native container.
@@ -238,42 +238,45 @@ function renderPanel(processedLines, settings) {
     injectPanel(panel);
 
     // Apply font size from settings via CSS custom property
-    panel.style.setProperty('--akshar-font-scale', (settings.fontSize ?? 100) / 100);
+    panel.style.setProperty('--tunescript-font-scale', (settings.fontSize ?? 100) / 100);
 
     panel.innerHTML = '';
 
-    processedLines.forEach((line, i) => {
+    let linesToRender = processedLines;
+    if (!processedLines.some(l => l.time !== null) && typeof estimateLineTimestamps === 'function') {
+        const video = getMainVideo();
+        const videoDuration = video && video.duration > 0 && isFinite(video.duration) ? video.duration : 0;
+        const estDuration = (typeof duration === 'number' && duration > 0) ? duration : videoDuration;
+        if (estDuration > 0) {
+            linesToRender = estimateLineTimestamps(processedLines, estDuration);
+        }
+    }
+
+    linesToRender.forEach((line, i) => {
         const lineEl = document.createElement('div');
-        lineEl.className = 'akshar-line';
+        lineEl.className = 'tunescript-line';
         lineEl.dataset.index = i;
 
         // Instrumental / music-only lines have no lyric text at all.
         // Render a 🎶 symbol so the sync highlight still works visually.
         const isEmpty = !line.original?.trim() && !line.romanized?.trim() && !line.translation?.trim();
         if (isEmpty) {
-            lineEl.classList.add('akshar-instrumental');
+            lineEl.classList.add('tunescript-instrumental');
             const sym = document.createElement('p');
-            sym.className = 'akshar-instrumental-symbol';
+            sym.className = 'tunescript-instrumental-symbol';
             sym.textContent = '🎶';
             lineEl.appendChild(sym);
         } else {
             const firstText = settings.originalFirst ? line.original : line.romanized;
             const secondText = settings.originalFirst ? line.romanized : line.original;
-            const firstClass = settings.originalFirst ? 'akshar-original' : 'akshar-romanized';
-            const secondClass = settings.originalFirst ? 'akshar-romanized' : 'akshar-original';
+            const firstClass = settings.originalFirst ? 'tunescript-original' : 'tunescript-romanized';
+            const secondClass = settings.originalFirst ? 'tunescript-romanized' : 'tunescript-original';
 
             if (settings.romanization) {
                 const r = document.createElement('p');
                 r.className = firstClass;
                 r.textContent = firstText;
                 lineEl.appendChild(r);
-            }
-
-            if (settings.showOriginal) {
-                const o = document.createElement('p');
-                o.className = secondClass;
-                o.textContent = secondText;
-                lineEl.appendChild(o);
             }
 
             if (settings.translation && line.translation) {
@@ -284,31 +287,57 @@ function renderPanel(processedLines, settings) {
                 const isAlreadyEnglish = _isEnglishLine(sourceText, translationText);
                 if (!isAlreadyEnglish) {
                     const t = document.createElement('p');
-                    t.className = 'akshar-translation';
+                    t.className = 'tunescript-translation';
                     t.textContent = translationText;
                     lineEl.appendChild(t);
                 }
             }
+
+            if (settings.showOriginal) {
+                const o = document.createElement('p');
+                o.className = secondClass;
+                o.textContent = secondText;
+                lineEl.appendChild(o);
+            }
         }
 
-        // Click-to-seek: clicking a timed line jumps the video to that timestamp
+        // Click-to-seek: clicking a timed line jumps playback to that timestamp
         if (line.time !== null) {
-            lineEl.classList.add('akshar-seekable');
-            lineEl.addEventListener('click', () => {
-                const video = getMainVideo();
-                if (video) {
-                    video.currentTime = line.time;
-                    // Brief visual flash to confirm the seek
-                    lineEl.classList.add('akshar-seek-flash');
-                    setTimeout(() => lineEl.classList.remove('akshar-seek-flash'), 400);
+            lineEl.classList.add('tunescript-seekable');
+            lineEl.addEventListener('click', (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+
+                if (location.hostname.includes('music.youtube.com')) {
+                    // YouTube Music: Use native player API via MAIN-world bridge.
+                    // Passes track-relative line.time directly (e.g. 122.25s) —
+                    // YTM's movie_player handles buffering, gapless stream, and scrubbing natively.
+                    console.log(`[Tunescript] 🎯 Click-to-seek (YTM native): line ${i} (${line.time.toFixed(2)}s)`);
+                    window.dispatchEvent(new CustomEvent('tunescript-seek', {
+                        detail: {
+                            time: line.time,
+                            duration: (typeof duration === 'number' && duration > 0) ? duration : 0
+                        }
+                    }));
+                } else {
+                    // Spotify: direct video.currentTime assignment
+                    const video = getMainVideo();
+                    if (video) {
+                        video.currentTime = line.time;
+                        console.log(`[Tunescript] 🎯 Click-to-seek (Spotify): line ${i} (${line.time.toFixed(2)}s)`);
+                    }
                 }
+
+                // Brief visual flash to confirm the seek
+                lineEl.classList.add('tunescript-seek-flash');
+                setTimeout(() => lineEl.classList.remove('tunescript-seek-flash'), 400);
             });
         }
 
         panel.appendChild(lineEl);
     });
 
-    console.log(`[Akshar] renderPanel: ${processedLines.length} lines rendered`);
+    console.log(`[Tunescript] renderPanel: ${processedLines.length} lines rendered`);
     attachScrollListener(panel);
 }
 
@@ -342,17 +371,17 @@ function _isEnglishLine(source, translation) {
 function setActiveLine(index) {
     lastActiveIndex = index;
 
-    document.querySelectorAll('.akshar-line').forEach((el, i) => {
-        el.classList.toggle('akshar-active', i === index);
-        el.classList.toggle('akshar-past', i < index);
-        el.classList.remove('akshar-future');
-        if (i > index) el.classList.add('akshar-future');
+    document.querySelectorAll('.tunescript-line').forEach((el, i) => {
+        el.classList.toggle('tunescript-active', i === index);
+        el.classList.toggle('tunescript-past', i < index);
+        el.classList.remove('tunescript-future');
+        if (i > index) el.classList.add('tunescript-future');
     });
 
     // Only auto-scroll if the user hasn't manually scrolled
     if (!autoScrollPaused) {
         isProgrammaticScroll = true;
-        document.querySelector(`.akshar-line[data-index="${index}"]`)
+        document.querySelector(`.tunescript-line[data-index="${index}"]`)
             ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         // Clear the flag after the smooth scroll animation finishes (~600ms)
         setTimeout(() => { isProgrammaticScroll = false; }, 800);
@@ -373,12 +402,12 @@ function injectPanel(panel) {
     // If it failed and we are on YTM, it means the Polymer container hasn't
     // hydrated yet. Poll every 500ms for up to 10 seconds.
     if (location.hostname.includes('music.youtube.com')) {
-        console.log('[Akshar] injectPanel: starting 500ms polling for YTM container…');
+        console.log('[Tunescript] injectPanel: starting 500ms polling for YTM container…');
         let attempts = 0;
         injectInterval = setInterval(() => {
             attempts++;
             if (_injectPanelCore(panel) || attempts >= 20) {
-                if (attempts >= 20) console.warn('[Akshar] injectPanel: timed out after 10s');
+                if (attempts >= 20) console.warn('[Tunescript] injectPanel: timed out after 10s');
                 clearInterval(injectInterval);
             }
         }, 500);
@@ -390,20 +419,20 @@ function injectPanel(panel) {
  * works even after Polymer re-renders the tab elements.
  */
 function _setupTier3TabListeners(panel, _unused) {
-    if (window.__aksharTier3Setup) return;
-    window.__aksharTier3Setup = true;
+    if (window.__tunescriptTier3Setup) return;
+    window.__tunescriptTier3Setup = true;
 
     document.body.addEventListener('click', (e) => {
         const tab = e.target.closest('tp-yt-paper-tab');
         if (!tab) return;
 
-        const p = document.getElementById('akshar-panel');
+        const p = document.getElementById('tunescript-panel');
         if (!p || p.dataset.tier3 !== 'true') return;
 
         const isLyrics = tab.textContent.trim().toLowerCase() === 'lyrics';
         p.style.setProperty('display', isLyrics ? 'block' : 'none', 'important');
     });
-    console.log('[Akshar] Tier 3 tab listener attached (event delegation)');
+    console.log('[Tunescript] Tier 3 tab listener attached (event delegation)');
 }
 
 function _injectPanelCore(panel) {
@@ -411,7 +440,7 @@ function _injectPanelCore(panel) {
     const spotifyContainer = document.querySelector('[data-testid="lyrics-container"]');
     if (spotifyContainer) {
         if (!spotifyContainer.parentNode.contains(panel)) {
-            console.log('[Akshar] injectPanel: replacing Spotify lyrics container');
+            console.log('[Tunescript] injectPanel: replacing Spotify lyrics container');
             spotifyContainer.style.visibility = 'hidden';
             spotifyContainer.parentNode.insertBefore(panel, spotifyContainer.nextSibling);
         }
@@ -446,7 +475,7 @@ function _injectPanelCore(panel) {
             // Only move the panel if it isn't already a sibling
             const alreadySibling = panel.parentNode === descShelf.parentNode && panel.isConnected;
             if (!alreadySibling) {
-                console.log('[Akshar] injectPanel: hiding YTM description-shelf, injecting panel as sibling');
+                console.log('[Tunescript] injectPanel: hiding YTM description-shelf, injecting panel as sibling');
                 descShelf.parentNode.insertBefore(panel, descShelf);
             }
             return true;
@@ -460,7 +489,7 @@ function _injectPanelCore(panel) {
         );
         if (sectionList) {
             if (!sectionList.contains(panel)) {
-                console.log('[Akshar] injectPanel: injecting into YTM lyrics section-list');
+                console.log('[Tunescript] injectPanel: injecting into YTM lyrics section-list');
                 // Hide existing children (they're Polymer components too)
                 Array.from(sectionList.children).forEach(child => {
                     if (child !== panel) child.style.display = 'none';
@@ -478,7 +507,7 @@ function _injectPanelCore(panel) {
 
         if (tabRenderer) {
             if (!document.body.contains(panel) || panel.parentElement !== document.body) {
-                console.log('[Akshar] injectPanel: Tier 3 — body overlay matching tab-renderer position');
+                console.log('[Tunescript] injectPanel: Tier 3 — body overlay matching tab-renderer position');
                 panel.dataset.tier3 = 'true';
 
                 // Dynamically measure the tab header (UP NEXT / LYRICS / RELATED bar)
@@ -514,13 +543,13 @@ function _injectPanelCore(panel) {
             return true;
         }
 
-        console.log('[Akshar] injectPanel: YTM — no container found at all');
+        console.log('[Tunescript] injectPanel: YTM — no container found at all');
         return false;
     }
 
     // ── Fallback: fixed overlay (only for unknown platforms) ──────────────────
     if (!panel.isConnected) {
-        console.log('[Akshar] injectPanel: no native container found — floating fallback');
+        console.log('[Tunescript] injectPanel: no native container found — floating fallback');
         panel.style.cssText = [
             'position:fixed',
             'bottom:80px',
@@ -544,9 +573,9 @@ function _injectPanelCore(panel) {
  * (Polymer can't touch it since it's on document.body).
  */
 function _startTier3Repositioner(panel, tabRenderer) {
-    if (window.__aksharTier3Repo) return;
-    window.__aksharTier3Repo = setInterval(() => {
-        const p = document.getElementById('akshar-panel');
+    if (window.__tunescriptTier3Repo) return;
+    window.__tunescriptTier3Repo = setInterval(() => {
+        const p = document.getElementById('tunescript-panel');
         if (!p || p.dataset.tier3 !== 'true') return;
         const tr = document.querySelector('ytmusic-player-page ytmusic-tab-renderer')
             || document.querySelector('ytmusic-tab-renderer');

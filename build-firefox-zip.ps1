@@ -1,10 +1,12 @@
+Add-Type -Assembly System.IO.Compression
 Add-Type -Assembly System.IO.Compression.FileSystem
 
-$src = "D:\CODING\Extensions\akshar"
-$staging = "D:\CODING\Extensions\akshar-firefox-staging"
-$zipPath = "D:\CODING\Extensions\akshar-firefox.zip"
+$src = $PSScriptRoot
+if (-not $src) { $src = Get-Location }
+$staging = Join-Path (Split-Path $src -Parent) "tunescript-firefox-staging"
+$zipPath = Join-Path (Split-Path $src -Parent) "tunescript-firefox.zip"
 
-Write-Host "Creating Firefox build staging area..."
+Write-Host "Creating Firefox build staging area at $staging..."
 if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
 New-Item -ItemType Directory -Path $staging | Out-Null
 
@@ -47,7 +49,7 @@ if ($manifest.host_permissions) {
     $manifest.host_permissions = @($manifest.host_permissions | Where-Object { $_ -ne 'http://localhost:11434/*' })
 }
 
-# Change background service worker to scripts
+# Change background service worker to scripts with forward slashes
 $manifest.background = @{
     scripts = @("background/background.js")
 }
@@ -55,12 +57,22 @@ $manifest.background = @{
 $jsonContent = $manifest | ConvertTo-Json -Depth 10
 Set-Content -Path $manifestPath -Value $jsonContent -Encoding UTF8
 
-Write-Host "Zipping Firefox extension..."
+Write-Host "Zipping Firefox extension with POSIX forward-slash relative paths..."
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 
-Compress-Archive -Path "$staging\*" -DestinationPath $zipPath -Force
+# Use .NET ZipArchive to guarantee forward slashes in zip entry paths (AMO requirement)
+$zipMode = [System.IO.Compression.ZipArchiveMode]::Create
+$zip = [System.IO.Compression.ZipFile]::Open($zipPath, $zipMode)
+
+$stagingPath = (Get-Item $staging).FullName
+Get-ChildItem -Path $stagingPath -Recurse | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
+    $relPath = $_.FullName.Substring($stagingPath.Length + 1).Replace('\', '/')
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $relPath) | Out-Null
+}
+
+$zip.Dispose()
 
 Write-Host "Cleaning up staging area..."
 Remove-Item $staging -Recurse -Force
 
-Write-Host "Firefox build completed: $zipPath"
+Write-Host "Firefox build completed successfully: $zipPath"

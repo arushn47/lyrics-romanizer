@@ -7,7 +7,7 @@
 // Depends on (loaded before this via manifest):
 //   content/main.js  → handleSongChange, getSettings
 
-console.log('[Akshar] ytmusic.js loaded ✓');
+console.log('[Tunescript] ytmusic.js loaded ✓');
 
 // Try multiple known selector variants for the Lyrics tab —
 // YTM has changed this a few times. We'll log which one worked.
@@ -33,7 +33,7 @@ const YTM_SELECTORS = {
 
 let lastYTMTrackKey = null;
 
-// ── Continuously hide native lyrics when Akshar is active ────────────────────
+// ── Continuously hide native lyrics when tunescript is active ────────────────────
 // YTM's Polymer components can re-render at any time (tab switch, scroll,
 // internal state changes), resetting the display:none we set on the
 // description-shelf-renderer.  This observer catches those re-renders.
@@ -57,7 +57,7 @@ const nativeLyricsObserver = new MutationObserver(() => {
     // Only act when the Lyrics tab is active — don't touch RELATED or UP NEXT
     if (!isLyricsTabActive()) return;
 
-    const panelExists = document.getElementById('akshar-panel');
+    const panelExists = document.getElementById('tunescript-panel');
     const nativeEls = document.querySelectorAll('ytmusic-description-shelf-renderer');
 
     if (nativeEls.length === 0) return;
@@ -65,7 +65,7 @@ const nativeLyricsObserver = new MutationObserver(() => {
     nativeEls.forEach(el => {
         if (el.style.display !== 'none') {
             el.style.display = 'none';
-            console.log('[Akshar] Re-hid native lyrics element (Polymer re-rendered)');
+            console.log('[Tunescript] Re-hid native lyrics element (Polymer re-rendered)');
         }
     });
 
@@ -75,8 +75,8 @@ const nativeLyricsObserver = new MutationObserver(() => {
         _reinjectTimer = setTimeout(() => {
             _reinjectTimer = null;
             // Re-check conditions after debounce — panel may have appeared
-            if (!document.getElementById('akshar-panel') && isLyricsTabActive()) {
-                console.log('[Akshar] Panel missing after tab switch — re-injecting');
+            if (!document.getElementById('tunescript-panel') && isLyricsTabActive()) {
+                console.log('[Tunescript] Panel missing after tab switch — re-injecting');
                 if (typeof reRenderCurrentLyrics === 'function') {
                     reRenderCurrentLyrics();
                 }
@@ -102,8 +102,8 @@ document.body.addEventListener('click', (e) => {
     if (isLyrics) {
         // Short delay so YTM renders the container first, then we re-inject
         setTimeout(() => {
-            if (!document.getElementById('akshar-panel')) {
-                console.log('[Akshar] Lyrics tab clicked — re-injecting panel');
+            if (!document.getElementById('tunescript-panel')) {
+                console.log('[Tunescript] Lyrics tab clicked — re-injecting panel');
                 if (typeof reRenderCurrentLyrics === 'function') {
                     reRenderCurrentLyrics();
                 }
@@ -115,10 +115,10 @@ document.body.addEventListener('click', (e) => {
         }, 300);
     } else {
         // Switching AWAY from lyrics — remove panel so it doesn't bleed into other tabs
-        const panel = document.getElementById('akshar-panel');
+        const panel = document.getElementById('tunescript-panel');
         if (panel && panel.dataset.tier3 !== 'true') {
             panel.remove();
-            console.log('[Akshar] Switched away from Lyrics tab — removed panel');
+            console.log('[Tunescript] Switched away from Lyrics tab — removed panel');
         }
     }
 });
@@ -133,7 +133,7 @@ function findLyricsTab() {
     for (const sel of YTM_SELECTORS.lyricsTabCandidates) {
         const el = document.querySelector(sel);
         if (el) {
-            console.log(`[Akshar] Lyrics tab found via selector: "${sel}"`);
+            console.log(`[Tunescript] Lyrics tab found via selector: "${sel}"`);
             _ensureTabEnabled(el);
             return el;
         }
@@ -142,17 +142,17 @@ function findLyricsTab() {
     const allTabs = Array.from(document.querySelectorAll('tp-yt-paper-tab, ytmusic-tab-renderer'));
     const byText = allTabs.find(el => el.textContent.trim().toLowerCase() === 'lyrics');
     if (byText) {
-        console.log('[Akshar] Lyrics tab found via text content search');
+        console.log('[Tunescript] Lyrics tab found via text content search');
         _ensureTabEnabled(byText);
         return byText;
     }
-    console.log('[Akshar] Lyrics tab NOT found. Available tabs:', allTabs.map(t => t.textContent.trim()));
+    console.log('[Tunescript] Lyrics tab NOT found. Available tabs:', allTabs.map(t => t.textContent.trim()));
     return null;
 }
 
 function _ensureTabEnabled(tab) {
     if (tab.hasAttribute('disabled')) {
-        console.log('[Akshar] Lyrics tab was disabled by YTM — forcibly enabling it');
+        console.log('[Tunescript] Lyrics tab was disabled by YTM — forcibly enabling it');
         tab.removeAttribute('disabled');
         tab.setAttribute('aria-disabled', 'false');
     }
@@ -166,11 +166,11 @@ function findLyricsText() {
     for (const sel of YTM_SELECTORS.lyricsTextCandidates) {
         const el = document.querySelector(sel);
         if (el) {
-            console.log(`[Akshar] Lyrics text element found via selector: "${sel}"`);
+            console.log(`[Tunescript] Lyrics text element found via selector: "${sel}"`);
             return el;
         }
     }
-    console.log('[Akshar] Lyrics text element NOT found by any known selector');
+    console.log('[Tunescript] Lyrics text element NOT found by any known selector');
     return null;
 }
 
@@ -185,12 +185,12 @@ async function waitForDescriptionText(maxWaitMs = 3000) {
     while (Date.now() < deadline) {
         const el = findLyricsText();
         if (el && el.innerText.trim().length > 0) {
-            console.log('[Akshar] Lyrics text appeared with', el.innerText.length, 'chars');
+            console.log('[Tunescript] Lyrics text appeared with', el.innerText.length, 'chars');
             return el;
         }
         await new Promise(r => setTimeout(r, 200));
     }
-    console.warn('[Akshar] Lyrics text did not appear within', maxWaitMs, 'ms');
+    console.warn('[Tunescript] Lyrics text did not appear within', maxWaitMs, 'ms');
     return null;
 }
 
@@ -207,13 +207,13 @@ async function waitForLyricsContainer(maxWaitMs = 3000) {
         // Best case: the exact lyrics text element
         const lyricsText = findLyricsText();
         if (lyricsText) {
-            console.log('[Akshar] waitForLyricsContainer: lyrics text element found');
+            console.log('[Tunescript] waitForLyricsContainer: lyrics text element found');
             return lyricsText;
         }
         // Good enough: the description shelf renderer (Tier 2 in injectPanel)
         const descShelf = document.querySelector('ytmusic-description-shelf-renderer');
         if (descShelf) {
-            console.log('[Akshar] waitForLyricsContainer: description-shelf-renderer found');
+            console.log('[Tunescript] waitForLyricsContainer: description-shelf-renderer found');
             return descShelf;
         }
         // Also accept the lyrics-specific section-list (page-type attribute)
@@ -221,43 +221,59 @@ async function waitForLyricsContainer(maxWaitMs = 3000) {
             'ytmusic-section-list-renderer[page-type="MUSIC_PAGE_TYPE_TRACK_LYRICS"]'
         );
         if (lyricsSectionList) {
-            console.log('[Akshar] waitForLyricsContainer: lyrics section-list found');
+            console.log('[Tunescript] waitForLyricsContainer: lyrics section-list found');
             return lyricsSectionList;
         }
         await new Promise(r => setTimeout(r, 200));
     }
-    console.warn('[Akshar] waitForLyricsContainer: timed out after', maxWaitMs, 'ms');
+    console.warn('[Tunescript] waitForLyricsContainer: timed out after', maxWaitMs, 'ms');
     return null;
 }
 
 /**
  * Extract the track's total duration in seconds from YTM.
- * Strategy 1: <video> element's .duration property.
- * Strategy 2: Parse the player bar time display "M:SS / M:SS" (total is after /).
+ * Strategy 1: Parse the player bar time display "M:SS / M:SS" (total is after /).
+ *             This is the ground-truth song duration (NOT cumulative video duration).
+ * Strategy 2: Try the progress slider's aria-valuemax.
+ * Strategy 3: Fallback to <video> element's .duration property only if UI elements aren't ready.
  */
-function _getYTMDuration() {
-    // Try <video> element first
-    const video = getMainVideo();
-    if (video && video.duration && isFinite(video.duration) && video.duration > 0) {
-        return video.duration;
-    }
-
-    // Fallback: parse "1:33 / 5:28" from the time-info element
+function _getYTMDuration(attempt = 0) {
+    // Strategy 1: parse "1:33 / 5:28" from the time-info element
     const timeInfo = document.querySelector('.time-info.ytmusic-player-bar');
     if (timeInfo) {
         const text = timeInfo.textContent.trim(); // e.g. "1:33 / 5:28"
         const parts = text.split('/');
         if (parts.length === 2) {
+            const current = _parseTimeString(parts[0].trim());
             const total = _parseTimeString(parts[1].trim());
-            if (total > 0) return total;
+            // On a new track's early poll attempts, if elapsed time is still > 10s,
+            // the time-info DOM has not reset from the previous track yet.
+            if (attempt < 5 && current > 10) {
+                // Ignore stale time-info from previous song
+            } else if (total > 0) {
+                console.log(`[Tunescript] _getYTMDuration: parsed ${total}s from time-info ("${text}")`);
+                return total;
+            }
         }
     }
 
-    // Fallback 2: try the slider's aria-valuemax
-    const slider = document.querySelector('#progress-bar, tp-yt-paper-slider#progress-bar');
-    if (slider) {
-        const max = parseFloat(slider.getAttribute('aria-valuemax'));
-        if (max && isFinite(max) && max > 0) return max;
+    // Strategy 2: try the slider's aria-valuemax (only after attempt >= 4, as slider also holds stale value during initial transition)
+    if (attempt >= 4) {
+        const slider = document.querySelector('#progress-bar, tp-yt-paper-slider#progress-bar');
+        if (slider) {
+            const max = parseFloat(slider.getAttribute('aria-valuemax'));
+            if (max && isFinite(max) && max > 0) {
+                console.log(`[Tunescript] _getYTMDuration: read ${max}s from slider aria-valuemax (attempt ${attempt})`);
+                return max;
+            }
+        }
+    }
+
+    // Strategy 3 (Fallback): <video> element's .duration property
+    const video = getMainVideo();
+    if (video && video.duration && isFinite(video.duration) && video.duration > 0) {
+        console.log(`[Tunescript] _getYTMDuration: fallback to video.duration (${video.duration.toFixed(1)}s)`);
+        return video.duration;
     }
 
     return 0;
@@ -290,15 +306,15 @@ async function waitForYTMTrackInfo(maxWaitMs = 10000, intervalMs = 300) {
         const bylineEl = document.querySelector('.byline.ytmusic-player-bar');
         const bylineParts = bylineEl ? bylineEl.textContent.split('•').map(s => s.trim()).filter(Boolean) : [];
         const artist = bylineParts[0] || '';
-        const duration = _getYTMDuration();
-        if (title && artist) {
-            console.log(`[Akshar] Track info ready after ${attempt} attempt(s): "${title}" by "${artist}" (${duration.toFixed(1)}s)`);
+        const duration = _getYTMDuration(attempt);
+        if (title && artist && (duration > 0 || attempt >= 6)) {
+            console.log(`[Tunescript] Track info ready after ${attempt} attempt(s): "${title}" by "${artist}" (${duration.toFixed(1)}s)`);
             return { title, artist, duration };
         }
-        console.log(`[Akshar] waitForYTMTrackInfo attempt ${attempt}: title="${title}" artist="${bylineParts.join(' • ')}" — retrying in ${intervalMs}ms`);
+        console.log(`[Tunescript] waitForYTMTrackInfo attempt ${attempt}: title="${title}" artist="${bylineParts.join(' • ')}" duration=${duration}s — retrying in ${intervalMs}ms`);
         await new Promise(r => setTimeout(r, intervalMs));
     }
-    console.warn('[Akshar] waitForYTMTrackInfo: timed out after', maxWaitMs, 'ms');
+    console.warn('[Tunescript] waitForYTMTrackInfo: timed out after', maxWaitMs, 'ms');
     return null;
 }
 
@@ -334,14 +350,14 @@ async function getDomLyricsYTM() {
             } else {
                 lastDomLyricsText = currentText;
                 lines = currentText.split('\n').map(l => l.trim()).filter(Boolean);
-                console.log(`[Akshar] DOM lyrics scraped: ${lines.length} lines`);
+                console.log(`[Tunescript] DOM lyrics scraped: ${lines.length} lines`);
                 return lines;
             }
         }
         await new Promise(r => setTimeout(r, 200));
     }
 
-    console.warn('[Akshar] getDomLyricsYTM: timed out waiting for fresh lyrics (or none available)');
+    console.warn('[Tunescript] getDomLyricsYTM: timed out waiting for fresh lyrics (or none available)');
     lastDomLyricsText = ''; // Clear so future songs don't falsely match
     return [];
 }
@@ -353,22 +369,29 @@ async function getDomLyricsYTM() {
  * @param {boolean} force - Skip the duplicate-song check (e.g. after API key added)
  */
 async function onYTMSongChange(force = false) {
-    console.log(`[Akshar] onYTMSongChange triggered${force ? ' (forced)' : ''}, polling for track info…`);
+    console.log(`[Tunescript] onYTMSongChange triggered${force ? ' (forced)' : ''}, polling for track info…`);
     isYTMForceReload = force;
 
     const info = await waitForYTMTrackInfo();
     if (!info) return;
 
+    if (force) {
+        lastYTMTrackKey = null;
+        lastDomLyricsText = '';
+        const key = makeCacheKey('ytmusic', info.title, info.artist);
+        await clearSongCache(key);
+    }
+
     const key = `${info.title}|${info.artist}`;
     if (!force && key === lastYTMTrackKey) {
-        console.log('[Akshar] Same track as before — skipping');
+        console.log('[Tunescript] Same track as before — skipping');
         return;
     }
     lastYTMTrackKey = key;
-    console.log(`[Akshar] 🎵 New track: ${key}`);
+    console.log(`[Tunescript] 🎵 New track: ${key}`);
 
     const settings = await getSettings();
-    console.log('[Akshar] Settings:', settings);
+    console.log('[Tunescript] Settings loaded (autoOpenLyrics:', settings.autoOpenLyrics, ')');
 
     // Remember which tab is currently active so we can restore it if needed.
     const allTabs = Array.from(document.querySelectorAll('tp-yt-paper-tab, ytmusic-tab-renderer'));
@@ -379,7 +402,7 @@ async function onYTMSongChange(force = false) {
     const tab = findLyricsTab();
     if (tab) {
         tab.click();
-        console.log('[Akshar] Opened Lyrics tab for injection target');
+        console.log('[Tunescript] Opened Lyrics tab for injection target');
         // Wait for the description-shelf-renderer to appear in the DOM.
         // The inner yt-formatted-string can take 1-2s to render after tab click.
         await waitForLyricsContainer(3000);
@@ -392,7 +415,7 @@ async function onYTMSongChange(force = false) {
     const lyricsTabFinal = findLyricsTab();
     if (lyricsTabFinal) {
         lyricsTabFinal.click();
-        console.log('[Akshar] Re-activated Lyrics tab before pipeline');
+        console.log('[Tunescript] Re-activated Lyrics tab before pipeline');
     }
 
     await handleSongChange({
@@ -409,13 +432,13 @@ async function onYTMSongChange(force = false) {
             const lt = findLyricsTab();
             if (lt) {
                 lt.click();
-                console.log('[Akshar] autoOpenLyrics: ensured Lyrics tab stays active');
+                console.log('[Tunescript] autoOpenLyrics: ensured Lyrics tab stays active');
             }
         }, 500);
     } else if (originalTab) {
         // Restore the tab the user was on before we switched for injection.
         originalTab.click();
-        console.log('[Akshar] Restored original tab (autoOpenLyrics is off)');
+        console.log('[Tunescript] Restored original tab (autoOpenLyrics is off)');
     }
 }
 
@@ -428,31 +451,42 @@ function getVideoId(url) {
 }
 
 let ytmCurrentVideoId = getVideoId(location.href);
-console.log('[Akshar] Starting URL observer. Current URL:', location.href);
+console.log('[Tunescript] Starting URL observer. Current URL:', location.href);
 
 const ytmNavObserver = new MutationObserver(() => {
     const newId = getVideoId(location.href);
     if (newId && newId !== ytmCurrentVideoId) {
-        console.log(`[Akshar] Video ID changed: ${ytmCurrentVideoId} → ${newId}`);
+        console.log(`[Tunescript] Video ID changed: ${ytmCurrentVideoId} → ${newId}`);
         ytmCurrentVideoId = newId;
         onYTMSongChange();
     }
 });
 ytmNavObserver.observe(document.body, { childList: true, subtree: true });
 
-// ── Re-trigger when API key is saved from the popup ──────────────────────────
+// ── Re-trigger when API key is saved from the popup or force reload requested ──
 chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync' && changes.geminiApiKey) {
         const newKey = changes.geminiApiKey.newValue;
         const oldKey = changes.geminiApiKey.oldValue || '';
         if (newKey && newKey !== oldKey) {
-            console.log('[Akshar] API key updated — forcing pipeline re-run for current song');
+            console.log('[Tunescript] API key updated — forcing pipeline re-run for current song');
             lastYTMTrackKey = null;
+            lastDomLyricsText = '';
+            if (typeof showLoadingPanel === 'function') showLoadingPanel();
             onYTMSongChange(true);
         }
+    } else if (area === 'local' && changes.forceSongReload) {
+        console.log('[Tunescript] Force song reload requested via popup button');
+        lastYTMTrackKey = null;
+        lastDomLyricsText = '';
+        if (typeof showLoadingPanel === 'function') showLoadingPanel();
+        onYTMSongChange(true);
     }
 });
 
+// Export on window for cross-script access
+window.onYTMSongChange = onYTMSongChange;
+
 // ── Initial load ──────────────────────────────────────────────────────────────
-console.log('[Akshar] Firing initial song check…');
+console.log('[Tunescript] Firing initial song check…');
 onYTMSongChange();

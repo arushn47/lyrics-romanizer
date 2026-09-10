@@ -1,4 +1,4 @@
-# Akshar — Icon Placeholder
+﻿# tunescript — Icon Placeholder
 
 The manifest references `icons/icon48.png` and `icons/icon128.png`.
 

@@ -1,6 +1,24 @@
-/* styles/panel.css
+/* styles/panel.css — tunescript
    Injected into Spotify and YT Music pages.
-   All classes prefixed with "akshar-" to avoid conflicts. */
+   All classes prefixed with "tunescript-" to avoid conflicts with host page. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+/* ════════════════════════════════════════════════════════════════════════════
+   DESIGN TOKENS
+   ════════════════════════════════════════════════════════════════════════════ */
+
+:root {
+    --mz-bg:      #0E0E16;
+    --mz-gold:    #C9A227;
+    --mz-gold-bg: rgba(201, 162, 39, 0.05);
+    --mz-w100:    #FFFFFF;
+    --mz-w85:     rgba(255, 255, 255, 0.85);
+    --mz-w55:     rgba(255, 255, 255, 0.55);
+    --mz-w35:     rgba(255, 255, 255, 0.35);
+    --mz-w15:     rgba(255, 255, 255, 0.15);
+    --mz-w08:     rgba(255, 255, 255, 0.08);
+}
 
 /* ════════════════════════════════════════════════════════════════════════════
    YT MUSIC LAYOUT OVERRIDES
@@ -25,15 +43,15 @@ ytmusic-player-page #side-panel ytmusic-tab-renderer {
     padding-right: 12px !important;
 }
 
-/* Tier 3 body-overlay panel (used when YTM has no native lyrics tab content) */
-#akshar-panel[data-tier3="true"] {
+/* Tier 3 body-overlay panel */
+#tunescript-panel[data-tier3="true"] {
     scrollbar-width: none;
     -ms-overflow-style: none;
     scroll-behavior: smooth;
     padding-top: 4px;
 }
 
-/* Hide YTM's "Lyrics not available" message when Akshar is active */
+/* Hide YTM's "Lyrics not available" message when panel is active */
 ytmusic-message-renderer,
 ytmusic-tab-renderer .empty-state,
 ytmusic-tab-renderer [class*="empty"],
@@ -42,13 +60,16 @@ ytmusic-tab-renderer [class*="message"] {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   AKSHAR PANEL
+   PANEL CONTAINER
    ════════════════════════════════════════════════════════════════════════════ */
 
-#akshar-panel {
+#tunescript-panel {
     font-size: 16px;
-    font-family: inherit;
-    padding: 16px 24px 60px 20px;
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+    text-rendering: optimizeLegibility !important;
+    padding: 16px 20px 60px 16px;
     max-height: 100%;
     height: 100%;
     overflow-y: auto;
@@ -56,119 +77,207 @@ ytmusic-tab-renderer [class*="message"] {
     scroll-behavior: smooth;
     scrollbar-width: none;
     box-sizing: border-box;
-    --akshar-font-scale: 1;
+    --tunescript-font-scale: 1;
 }
 
-#akshar-panel::-webkit-scrollbar {
+#tunescript-panel::-webkit-scrollbar {
     display: none;
 }
 
-/* ── Lines ────────────────────────────────────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════════════
+   LYRIC LINES
+   ════════════════════════════════════════════════════════════════════════════ */
 
-.akshar-line {
+.tunescript-line {
     margin-bottom: 24px;
-    /* Default: fully visible — if sync is active, past/future rules dim non-active lines.
-       If the track is unsynced, all lines stay at full opacity (readable). */
     opacity: 1;
     transition:
         opacity 0.3s ease,
         transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1),
         text-shadow 0.3s ease;
     cursor: default;
-    padding: 3px 6px;
     border-radius: 8px;
+    padding: 2px 6px;
+    margin-left: -6px; /* Offset padding so text visually aligns left */
 }
 
-.akshar-line.akshar-active {
-    opacity: 1;
-    transform: scale(1.015);
+/* ── Active line ──────────────────────────────────────────────────────────── */
+
+.tunescript-line.tunescript-active {
+    opacity: 1 !important;
+    transform: scale(1.02);
     transform-origin: left center;
-    /* Soft white glow on the active lyric line */
+    /* Soft, luxurious warm gold glow */
     text-shadow:
-        0 0 18px rgba(255, 255, 255, 0.55),
-        0 0 40px rgba(255, 255, 255, 0.25);
+        0 0 18px rgba(201, 162, 39, 0.4),
+        0 0 36px rgba(201, 162, 39, 0.2);
 }
 
-/* These only take effect when sync is running (setActiveLine has been called) */
-.akshar-line.akshar-past {
-    opacity: 0.18;
+/* ── Past lines ───────────────────────────────────────────────────────────── */
+
+.tunescript-line.tunescript-past {
+    opacity: 0.32;
     text-shadow: none;
 }
 
-.akshar-line.akshar-future {
-    opacity: 0.30;
+/* ── Future lines ─────────────────────────────────────────────────────────── */
+
+.tunescript-line.tunescript-future {
+    opacity: 0.52;
     text-shadow: none;
 }
 
-/* ── Instrumental / music-only lines ─────────────────────────────────────── */
+/* ── Seekable ─────────────────────────────────────────────────────────────── */
 
-.akshar-instrumental {
-    /* Don't scale-up the way lyric lines do when active */
+.tunescript-seekable {
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+}
+
+.tunescript-seekable:hover {
+    opacity: 0.85;
+}
+
+.tunescript-seekable.tunescript-active:hover {
+    opacity: 1;
+}
+
+.tunescript-seek-flash {
+    animation: tunescript-flash 0.35s ease;
+}
+
+@keyframes tunescript-flash {
+    0%   { background: rgba(201, 162, 39, 0.15); }
+    100% { background: var(--mz-gold-bg); }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   TEXT TIERS — three clear levels of hierarchy
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* Tier 1 · Romanized — hero text, bold and readable */
+.tunescript-romanized {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+    font-size: calc(2.4rem * var(--tunescript-font-scale));
+    font-weight: 700 !important;
+    font-style: normal;
+    letter-spacing: -0.015em;
+    line-height: 1.2;
+    color: #FFFFFF !important;
+    margin: 0 0 6px 0;
+    -webkit-font-smoothing: antialiased !important;
+}
+
+.tunescript-line.tunescript-active .tunescript-romanized {
+    font-weight: 800 !important;
+    color: #FFFFFF !important;
+}
+
+/* Tier 2 · Translation — cool light blue-grey, supporting role */
+.tunescript-translation {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+    font-size: calc(1.65rem * var(--tunescript-font-scale));
+    font-weight: 500 !important;
+    font-style: italic;
+    line-height: 1.35;
+    color: rgba(200, 220, 255, 0.85) !important;
+    margin: 0 0 4px 0;
+    letter-spacing: 0.01em;
+    -webkit-font-smoothing: antialiased !important;
+}
+
+/* Tier 3 · Original script — warm gold, verification only */
+.tunescript-original {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+    font-size: calc(1.65rem * var(--tunescript-font-scale));
+    font-weight: 500 !important;
+    font-style: normal;
+    line-height: 1.35;
+    color: rgba(201, 162, 39, 0.75) !important;
+    margin: 0;
+    letter-spacing: 0.01em;
+    -webkit-font-smoothing: antialiased !important;
+}
+
+/* For non-active lines, hide translation and original to reduce noise */
+.tunescript-line.tunescript-past .tunescript-translation,
+.tunescript-line.tunescript-future .tunescript-translation,
+.tunescript-line.tunescript-past .tunescript-original,
+.tunescript-line.tunescript-future .tunescript-original {
+    display: none;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   INSTRUMENTAL / MUSIC-ONLY LINES
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.tunescript-instrumental {
     min-height: 2.5rem;
     display: flex;
     align-items: center;
 }
 
-.akshar-instrumental-symbol {
-    font-size: calc(2.5rem * var(--akshar-font-scale));
+.tunescript-instrumental-symbol {
+    font-size: calc(2.5rem * var(--tunescript-font-scale));
     font-weight: 800;
     line-height: 1.15;
     margin: 0;
     user-select: none;
-    transition: transform 0.3s ease, filter 0.3s ease;
-    /* Default: desaturated and dimmed to a soft white (matches lyric text style) */
-    filter: grayscale(1) brightness(2.5);
-    animation: akshar-float 2.4s ease-in-out infinite;
+    color: var(--mz-w35);
+    transition: color 0.3s ease, transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1);
+    animation: tunescript-float 2.4s ease-in-out infinite;
 }
 
-/* When active: bright white with glow */
-.akshar-line.akshar-active .akshar-instrumental-symbol {
-    filter: grayscale(1) brightness(6) drop-shadow(0 0 12px rgba(255, 255, 255, 0.6));
-    transform: scale(1.25);
-    animation: akshar-float-active 1.4s ease-in-out infinite;
+.tunescript-line.tunescript-active .tunescript-instrumental-symbol {
+    color: var(--mz-gold);
+    transform: scale(1.2);
+    text-shadow: 0 0 20px rgba(201, 162, 39, 0.4);
+    animation: tunescript-float-active 1.4s ease-in-out infinite;
 }
 
-/* Past/future: even dimmer */
-.akshar-line.akshar-past .akshar-instrumental-symbol {
-    filter: grayscale(1) brightness(1);
+.tunescript-line.tunescript-past .tunescript-instrumental-symbol {
+    color: var(--mz-w15);
 }
 
-.akshar-line.akshar-future .akshar-instrumental-symbol {
-    filter: grayscale(1) brightness(1.5);
-}
-
-/* Instrumental lines: don't double-dip on opacity.
-   The parent .akshar-line already handles past/future dimming,
-   so the symbol inside just inherits it like normal lyric text. */
-.akshar-line.akshar-past.akshar-instrumental,
-.akshar-line.akshar-future.akshar-instrumental {
+/* Instrumental lines inherit parent opacity — don't double-dim */
+.tunescript-line.tunescript-past.tunescript-instrumental,
+.tunescript-line.tunescript-future.tunescript-instrumental {
     opacity: inherit;
 }
 
-/* ── Resume Auto-Scroll Button ────────────────────────────────────────────── */
+@keyframes tunescript-float {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(-4px); }
+}
 
-.akshar-resume-btn {
+@keyframes tunescript-float-active {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(-5px); }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   RESUME AUTO-SCROLL BUTTON
+   ════════════════════════════════════════════════════════════════════════════ */
+
+.tunescript-resume-btn {
     position: fixed;
     bottom: 100px;
     right: 32px;
     display: flex;
     align-items: center;
     gap: 8px;
-    background: rgba(18, 18, 18, 0.75);
-    color: rgba(255, 255, 255, 0.9);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 24px;
+    background: rgba(14, 14, 22, 0.88);
+    color: #FFFFFF;
+    border: 1px solid rgba(201, 162, 39, 0.35);
+    border-radius: 999px;
     padding: 8px 16px 8px 12px;
     font-size: 13px;
-    font-weight: 500;
-    font-family: inherit;
+    font-weight: 600;
+    font-family: 'Inter', system-ui, sans-serif !important;
     letter-spacing: 0.02em;
     cursor: pointer;
-    backdrop-filter: blur(16px) saturate(1.4);
-    -webkit-backdrop-filter: blur(16px) saturate(1.4);
-    box-shadow:
-        0 2px 8px rgba(0, 0, 0, 0.35),
-        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     transition:
         opacity 0.25s ease,
         transform 0.3s cubic-bezier(0.34, 1.4, 0.64, 1),
@@ -179,226 +288,122 @@ ytmusic-tab-renderer [class*="message"] {
     z-index: 9500;
 }
 
-.akshar-resume-visible {
+.tunescript-resume-visible {
     opacity: 1;
     pointer-events: auto;
     transform: translateY(0) scale(1);
 }
 
-.akshar-resume-btn:hover {
-    background: rgba(30, 30, 30, 0.9);
-    border-color: rgba(255, 255, 255, 0.12);
+.tunescript-resume-btn:hover {
+    background: rgba(20, 20, 32, 0.95);
+    border-color: rgba(201, 162, 39, 0.6);
     transform: translateY(-1px) scale(1.02);
 }
 
-.akshar-resume-btn:active {
+.tunescript-resume-btn:active {
     transform: scale(0.97);
 }
 
-/* Pulsing dot — indicates sync is still running */
-.akshar-resume-dot {
+/* Pulsing dot — indicates sync is running */
+.tunescript-resume-dot {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #4fc3f7;
-    box-shadow: 0 0 6px rgba(79, 195, 247, 0.5);
-    animation: akshar-dot-pulse 1.6s ease-in-out infinite;
+    background: var(--mz-gold);
+    box-shadow: 0 0 6px rgba(201, 162, 39, 0.5);
+    animation: tunescript-dot-pulse 1.6s ease-in-out infinite;
     flex-shrink: 0;
 }
 
-@keyframes akshar-dot-pulse {
+@keyframes tunescript-dot-pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.4; transform: scale(0.75); }
+    50%       { opacity: 0.4; transform: scale(0.75); }
 }
 
-.akshar-resume-text {
-    line-height: 1;
-}
+.tunescript-resume-text { line-height: 1; }
 
-/* Dynamic arrow */
-.akshar-resume-arrow {
+.tunescript-resume-arrow {
     font-size: 15px;
     line-height: 1;
     opacity: 0.7;
     transition: transform 0.25s ease;
 }
 
-.akshar-resume-up .akshar-resume-arrow {
-    transform: translateY(-1px);
-}
+.tunescript-resume-up .tunescript-resume-arrow   { transform: translateY(-1px); }
+.tunescript-resume-down .tunescript-resume-arrow { transform: translateY(1px); }
 
-.akshar-resume-down .akshar-resume-arrow {
-    transform: translateY(1px);
-}
+/* ════════════════════════════════════════════════════════════════════════════
+   LOADING SKELETON
+   ════════════════════════════════════════════════════════════════════════════ */
 
-@keyframes akshar-float {
-
-    0%,
-    100% {
-        transform: translateY(0);
-    }
-
-    50% {
-        transform: translateY(-4px);
-    }
-}
-
-/* Active float overrides base float so both scale + translate work */
-.akshar-line.akshar-active .akshar-instrumental-symbol {
-    animation: akshar-float-active 1.4s ease-in-out infinite;
-}
-
-@keyframes akshar-float-active {
-
-    0%,
-    100% {
-        transform: scale(1.25) translateY(0);
-    }
-
-    50% {
-        transform: scale(1.25) translateY(-5px);
-    }
-}
-
-/* ── Seekable ─────────────────────────────────────────────────────────────── */
-
-.akshar-seekable {
-    cursor: pointer;
-}
-
-/* Hover: boost dim lines but never dim an already-active line */
-.akshar-seekable:hover {
-    opacity: 0.75;
-}
-
-/* Active + hover: preserve full brightness and glow */
-.akshar-seekable.akshar-active:hover {
-    opacity: 1;
-}
-
-.akshar-seek-flash {
-    animation: akshar-flash 0.4s ease;
-}
-
-@keyframes akshar-flash {
-    0% {
-        background: rgba(255, 255, 255, 0.12);
-    }
-
-    100% {
-        background: transparent;
-    }
-}
-
-/* ── Text — three clear tiers ─────────────────────────────────────────────── */
-
-/* Tier 1 · Romanized — big bold italic, fills the panel width */
-.akshar-romanized {
-    font-size: calc(2.7rem * var(--akshar-font-scale));
-    /* ~35px */
-    font-weight: 800;
-    font-style: normal;
-    letter-spacing: -0.02em;
-    line-height: 1.15;
-    color: #ffffff;
-    margin: 0 0 6px 0;
-}
-
-/* Tier 2 · Original script — warm amber, clearly secondary */
-.akshar-original {
-    font-size: calc(2rem * var(--akshar-font-scale));
-    /* ~18px */
-    font-weight: 400;
-    font-style: normal;
-    line-height: 1.35;
-    color: rgba(255, 195, 100, 0.6);
-    margin: 0 0 4px 0;
-    letter-spacing: 0.01em;
-}
-
-/* Tier 3 · Translation — cool blue-grey, smallest */
-.akshar-translation {
-    font-size: calc(2rem * var(--akshar-font-scale));
-    /* ~15px */
-    font-weight: 400;
-    font-style: italic;
-    line-height: 1.35;
-    color: rgba(150, 180, 220, 0.65);
-    margin: 0;
-    letter-spacing: 0.015em;
-}
-
-/* ── Loading skeleton ─────────────────────────────────────────────────────── */
-
-.akshar-loading {
+.tunescript-loading {
     padding: 16px 12px;
 }
 
-.akshar-skeleton {
+.tunescript-skeleton {
     height: 18px;
-    border-radius: 8px;
+    border-radius: 4px;
     margin-bottom: 14px;
     width: 75%;
     background: linear-gradient(90deg,
-            rgba(255, 255, 255, 0.04) 0%,
-            rgba(255, 255, 255, 0.10) 40%,
-            rgba(255, 255, 255, 0.04) 100%);
+        rgba(255,255,255,0.03) 0%,
+        rgba(201,162,39,0.08) 40%,
+        rgba(255,255,255,0.03) 100%);
     background-size: 300% 100%;
-    animation: akshar-shimmer 2s ease-in-out infinite;
+    animation: tunescript-shimmer 2s ease-in-out infinite;
 }
 
-.akshar-skeleton.short {
+.tunescript-skeleton.short {
     height: 12px;
     margin-top: -4px;
     margin-bottom: 22px;
     opacity: 0.5;
 }
 
-@keyframes akshar-shimmer {
-    0% {
-        background-position: 200% 0;
-    }
-
-    100% {
-        background-position: -200% 0;
-    }
+@keyframes tunescript-shimmer {
+    0%   { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
 }
 
-/* ── Status bar ──────────────────────────────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════════════
+   STATUS BAR
+   ════════════════════════════════════════════════════════════════════════════ */
 
-.akshar-status {
+.tunescript-status {
     display: flex;
     justify-content: center;
     margin-bottom: 18px;
     padding: 5px 12px;
-    border-radius: 20px;
+    border-radius: 999px;
     font-size: 0.75rem;
     font-style: italic;
-    color: rgba(255, 255, 255, 0.55);
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--mz-w35);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--mz-w08);
     line-height: 1.4;
     width: fit-content;
     margin-left: auto;
     margin-right: auto;
 }
 
-.akshar-status[data-type="warn"] {
-    color: rgba(255, 200, 100, 0.75);
-    background: rgba(255, 180, 50, 0.07);
-    border-color: rgba(255, 180, 50, 0.15);
+.tunescript-status[data-type="warn"] {
+    color: rgba(201, 162, 39, 0.85);
+    background: rgba(201, 162, 39, 0.07);
+    border-color: rgba(201, 162, 39, 0.2);
 }
 
-.akshar-status[data-type="done"] {
-    color: rgba(100, 220, 140, 0.75);
+.tunescript-status[data-type="done"] {
+    color: rgba(100, 220, 140, 0.85);
     background: rgba(80, 200, 120, 0.07);
     border-color: rgba(80, 200, 120, 0.15);
 }
 
-/* ── Error ────────────────────────────────────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════════════
+   ERROR
+   ════════════════════════════════════════════════════════════════════════════ */
 
-.akshar-error {
-    color: rgba(255, 255, 255, 0.38);
+.tunescript-error {
+    color: var(--mz-w55);
     font-size: 0.9rem;
     font-style: italic;
     padding: 20px 6px;
@@ -407,14 +412,11 @@ ytmusic-tab-renderer [class*="message"] {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   MOBILE RESPONSIVE — Firefox Android / small viewports
+   MOBILE RESPONSIVE (Phones / Mobile Browsers)
    ════════════════════════════════════════════════════════════════════════════ */
 
 @media screen and (max-width: 768px) {
 
-    /* ── Disable desktop side-panel width override ─────────────────────────── */
-    /* YTM mobile doesn't have a side panel — it uses full-width tabs below
-       the player. The 35vw override squishes everything on mobile. */
     ytmusic-player-page #side-panel.ytmusic-player-page {
         min-width: unset !important;
         max-width: 100% !important;
@@ -428,107 +430,121 @@ ytmusic-tab-renderer [class*="message"] {
         padding-right: 0 !important;
     }
 
-    /* ── Panel: full width, tighter padding ────────────────────────────────── */
-    #akshar-panel {
-        padding: 12px 14px 48px 12px !important;
+    #tunescript-panel {
+        padding: 14px 16px 56px 14px !important;
         width: 100% !important;
         max-width: 100% !important;
         box-sizing: border-box !important;
+        -webkit-font-smoothing: antialiased !important;
     }
 
-    /* Tier 3 overlay: fill entire available width on mobile */
-    #akshar-panel[data-tier3="true"] {
+    #tunescript-panel[data-tier3="true"] {
         left: 0 !important;
         width: 100vw !important;
-        padding: 8px 14px 48px 12px !important;
+        padding: 10px 16px 56px 14px !important;
     }
 
-    /* ── Line spacing — tighter on small screens ──────────────────────────── */
-    .akshar-line {
-        margin-bottom: 18px;
-        padding: 2px 4px;
+    .tunescript-line {
+        margin-bottom: 18px !important;
     }
 
-    /* ── Font sizes — scaled down for mobile readability ──────────────────── */
-    /* Tier 1 · Romanized — from 2.7rem → 1.5rem */
-    .akshar-romanized {
-        font-size: calc(1.5rem * var(--akshar-font-scale)) !important;
+    /* Active line on mobile: bold, bright white, high legibility */
+    .tunescript-line.tunescript-active {
+        opacity: 1 !important;
+        transform: scale(1.01) !important;
+    }
+
+    /* Non-active lines on mobile: keep clear visibility (not faint) */
+    .tunescript-line.tunescript-past {
+        opacity: 0.42 !important;
+    }
+
+    .tunescript-line.tunescript-future {
+        opacity: 0.65 !important;
+    }
+
+    .tunescript-romanized {
+        font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+        font-size: calc(1.6rem * var(--tunescript-font-scale)) !important;
+        font-weight: 700 !important;
         line-height: 1.25 !important;
-        letter-spacing: -0.01em;
-        margin-bottom: 4px !important;
+        letter-spacing: -0.01em !important;
+        color: #FFFFFF !important;
+        margin-bottom: 5px !important;
+        -webkit-font-smoothing: antialiased !important;
     }
 
-    /* Tier 2 · Original script — from 2rem → 1.15rem */
-    .akshar-original {
-        font-size: calc(1.15rem * var(--akshar-font-scale)) !important;
+    .tunescript-line.tunescript-active .tunescript-romanized {
+        font-weight: 800 !important;
+        color: #FFFFFF !important;
+        text-shadow: 0 0 16px rgba(201, 162, 39, 0.45) !important;
+    }
+
+    .tunescript-translation {
+        font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+        font-size: calc(1.2rem * var(--tunescript-font-scale)) !important;
+        font-weight: 500 !important;
         line-height: 1.35 !important;
+        color: rgba(200, 220, 255, 0.9) !important;
         margin-bottom: 3px !important;
+        -webkit-font-smoothing: antialiased !important;
     }
 
-    /* Tier 3 · Translation — from 2rem → 1.1rem */
-    .akshar-translation {
-        font-size: calc(1.1rem * var(--akshar-font-scale)) !important;
+    .tunescript-original {
+        font-family: 'Inter', system-ui, -apple-system, sans-serif !important;
+        font-size: calc(1.15rem * var(--tunescript-font-scale)) !important;
+        font-weight: 500 !important;
         line-height: 1.35 !important;
+        color: rgba(201, 162, 39, 0.85) !important;
+        -webkit-font-smoothing: antialiased !important;
     }
 
-    /* Instrumental symbol — smaller on mobile */
-    .akshar-instrumental-symbol {
-        font-size: calc(1.8rem * var(--akshar-font-scale)) !important;
+    .tunescript-instrumental-symbol {
+        font-size: calc(1.8rem * var(--tunescript-font-scale)) !important;
     }
 
-    .akshar-instrumental {
+    .tunescript-instrumental {
         min-height: 1.8rem;
     }
 
-    /* ── Active line effect — subtler on mobile (no overflow) ─────────────── */
-    .akshar-line.akshar-active {
-        transform: scale(1.008);
-        text-shadow:
-            0 0 12px rgba(255, 255, 255, 0.45),
-            0 0 28px rgba(255, 255, 255, 0.18);
-    }
-
-    /* ── Resume button — bottom-center, touch-friendly ────────────────────── */
-    .akshar-resume-btn {
+    /* Resume button — center on mobile, touch-friendly */
+    .tunescript-resume-btn {
         bottom: 80px;
         right: 50%;
         transform: translateX(50%) translateY(12px) scale(0.95);
         padding: 10px 18px 10px 14px;
         font-size: 12px;
-        border-radius: 20px;
+        font-weight: 600;
     }
 
-    .akshar-resume-visible {
+    .tunescript-resume-visible {
         transform: translateX(50%) translateY(0) scale(1);
     }
 
-    .akshar-resume-btn:hover {
+    .tunescript-resume-btn:hover {
         transform: translateX(50%) translateY(-1px) scale(1.02);
     }
 
-    .akshar-resume-btn:active {
+    .tunescript-resume-btn:active {
         transform: translateX(50%) scale(0.97);
     }
 
-    /* ── Status bar — smaller text ────────────────────────────────────────── */
-    .akshar-status {
+    .tunescript-status {
         font-size: 0.68rem;
         padding: 4px 10px;
     }
 
-    /* ── Loading skeleton — proportional ──────────────────────────────────── */
-    .akshar-skeleton {
+    .tunescript-skeleton {
         height: 14px;
         margin-bottom: 10px;
     }
 
-    .akshar-skeleton.short {
+    .tunescript-skeleton.short {
         height: 10px;
         margin-bottom: 16px;
     }
 
-    /* ── Error text ───────────────────────────────────────────────────────── */
-    .akshar-error {
+    .tunescript-error {
         font-size: 0.8rem;
         padding: 16px 8px;
     }
