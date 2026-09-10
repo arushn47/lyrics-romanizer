@@ -225,7 +225,7 @@ function showErrorPanel(msg) {
     console.log('[Tunescript] showErrorPanel:', msg);
 }
 
-function renderPanel(processedLines, settings, duration) {
+function renderPanel(processedLines, settings, duration = 0) {
     let panel = document.getElementById('tunescript-panel');
     if (!panel) {
         panel = document.createElement('div');
@@ -320,11 +320,15 @@ function renderPanel(processedLines, settings, duration) {
                         }
                     }));
                 } else {
-                    // Spotify: direct video.currentTime assignment
+                    // Spotify: direct video.currentTime assignment with duration clamp
                     const video = getMainVideo();
                     if (video) {
-                        video.currentTime = line.time;
-                        console.log(`[Tunescript] 🎯 Click-to-seek (Spotify): line ${i} (${line.time.toFixed(2)}s)`);
+                        let seekTarget = line.time;
+                        if (typeof duration === 'number' && duration > 0) {
+                            seekTarget = Math.max(0, Math.min(seekTarget, duration - 0.5));
+                        }
+                        video.currentTime = seekTarget;
+                        console.log(`[Tunescript] 🎯 Click-to-seek (Spotify): line ${i} (${seekTarget.toFixed(2)}s)`);
                     }
                 }
 

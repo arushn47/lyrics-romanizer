@@ -1,4 +1,4 @@
-﻿// shared/lrclib.js
+// shared/lrclib.js
 // Fetches synced (LRC) or plain lyrics from LRCLIB.net — free, no auth.
 // LRCLIB is the single source of truth for BOTH lyrics text AND timestamps.
 // Duration is passed to help the API pick the right version (live, remix, etc.).
@@ -142,29 +142,37 @@ async function _doSearchRequest(query, duration, signal, artist = '') {
             const durationMatches = candidates.filter(e =>
                 e.duration && Math.abs(e.duration - duration) <= TOLERANCE
             );
-            // Prefer entries with Latin/romanized lyrics over native script.
-            // Pre-romanized lyrics are higher quality and skip the Gemini call.
+            // Prefer entries in native Indic script over Latin.
+            // Native script enables full phonetic romanization, English translation,
+            // and native script display, preventing English-translated lyrics from taking precedence.
             const sortedMatches = [...durationMatches].sort((a, b) => {
                 const aLatin = _isLatin(a.syncedLyrics || a.plainLyrics || '');
                 const bLatin = _isLatin(b.syncedLyrics || b.plainLyrics || '');
-                if (aLatin && !bLatin) return -1;
-                if (!aLatin && bLatin) return 1;
+                if (!aLatin && bLatin) return -1;
+                if (aLatin && !bLatin) return 1;
                 return 0;
             });
-            // Try duration-matched results first (romanized preferred)
+            // Try duration-matched results first (native Indic script preferred)
             for (const entry of sortedMatches) {
                 const parsed = _parseLrclibResponse(entry);
                 if (parsed) {
                     const isLatin = _isLatin(entry.syncedLyrics || entry.plainLyrics || '');
-                    console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration}s ✓${isLatin ? ', romanized' : ''})`);
+                    console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration}s ✓${!isLatin ? ', native script' : ', latin'})`);
                     return parsed;
                 }
             }
             console.log('[Tunescript] LRCLIB search: no duration-matched results had lyrics, trying any…');
         }
 
-        // Fallback: pick first result that has lyrics (regardless of duration)
-        for (const entry of candidates) {
+        // Fallback: pick first result that has lyrics (regardless of duration, native script preferred)
+        const sortedCandidates = [...candidates].sort((a, b) => {
+            const aLatin = _isLatin(a.syncedLyrics || a.plainLyrics || '');
+            const bLatin = _isLatin(b.syncedLyrics || b.plainLyrics || '');
+            if (!aLatin && bLatin) return -1;
+            if (aLatin && !bLatin) return 1;
+            return 0;
+        });
+        for (const entry of sortedCandidates) {
             const parsed = _parseLrclibResponse(entry);
             if (parsed) {
                 console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (duration: ${entry.duration || '?'}s)`);
