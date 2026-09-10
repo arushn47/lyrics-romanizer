@@ -155,22 +155,15 @@ async function _doSearchRequest(query, duration, signal, artist = '') {
 }
 
 /**
- * Pick the best lyrics entry from a candidate pool, in priority order:
+ * Pick the best lyrics entry from a candidate pool:
  *
- *   1. Native-script entries — always preferred when available. Gemini can
- *      generate romanization + translation from these, and the raw text
- *      doubles as the "Original script" toggle data. This is the only path
- *      that guarantees all 3 popup display modes work correctly.
+ *   1. Native Indic script entries — always preferred when available.
+ *      Gemini generates full phonetic romanization + English translation from these,
+ *      and the raw text provides authentic content for the "Original script" toggle.
+ *      This guarantees all popup display modes work cleanly and prevents
+ *      English-translated entries from taking precedence.
  *
- *   2. Latin-script entries VERIFIED as genuine phonetic romanization (not
- *      an English translation misidentified by _isLatin's script check).
- *      Skips an unnecessary Gemini call when a human has already done the
- *      transliteration — but the "Original script" toggle will show
- *      duplicate romanized text, since no native glyphs exist in this case.
- *
- *   3. Any remaining Latin entry, unverified — last resort. May be an
- *      English translation rather than romanization; logged as a warning
- *      so it's traceable if the lyrics look wrong to a user.
+ *   2. Latin-script entries — fallback when no native-script entry exists on LRCLIB.
  */
 function _selectBestEntry(pool) {
     const nativeCandidates = [];
@@ -182,7 +175,7 @@ function _selectBestEntry(pool) {
         (_isLatin(text) ? latinCandidates : nativeCandidates).push(entry);
     }
 
-    // Tier 1: Authentic native Indic script
+    // 1. Native Indic script — always preferred
     for (const entry of nativeCandidates) {
         const parsed = _parseLrclibResponse(entry);
         if (parsed) {
@@ -191,60 +184,17 @@ function _selectBestEntry(pool) {
         }
     }
 
-    // Tier 2: Verified Romanized Latin (Tanglish/Hinglish)
-    const verifiedRomanized = latinCandidates.filter(e => {
-        const text = e.syncedLyrics || e.plainLyrics || '';
-        return !_looksLikeEnglishTranslation(text, e.trackName);
-    });
-    for (const entry of verifiedRomanized) {
-        const parsed = _parseLrclibResponse(entry);
-        if (parsed) {
-            console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (verified romanization, duration: ${entry.duration || '?'}s)`);
-            return parsed;
-        }
-    }
-
-    // Tier 3: Unverified Latin fallback
+    // 2. Latin script fallback (when no native entry exists on LRCLIB)
     for (const entry of latinCandidates) {
         const parsed = _parseLrclibResponse(entry);
         if (parsed) {
-            console.warn(`[Tunescript] LRCLIB search: falling back to unverified Latin entry "${entry.trackName}" — may be an English translation, not romanization`);
+            console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (latin script fallback, duration: ${entry.duration || '?'}s)`);
             return parsed;
         }
     }
 
     console.log('[Tunescript] LRCLIB search: results found but none had usable lyrics');
     return null;
-}
-
-/**
- * Heuristic: does this Latin-script text look like an English translation
- * rather than phonetic transliteration of an Indic language?
- *
- * Checked as a RATIO over the whole entry, not per-line — Tamil/Hindi film
- * lyrics often mix in literal English phrases ("I love you", "my heart")
- * without the entry being a translation. A high *overall* density of
- * English function words is the real signal: phonetic transliteration of
- * Indic words doesn't naturally produce English grammar at any volume.
- */
-function _looksLikeEnglishTranslation(text, trackName = '') {
-    const stripped = text.replace(/\[\d+:\d+\.\d+\]/g, '');
-    const words = stripped.toLowerCase().match(/[a-z']+/g) || [];
-    if (words.length === 0) return false;
-
-    const ENGLISH_STOPWORDS = new Set([
-        'the', 'with', 'your', 'should', 'would', 'could', 'this', 'that', 'from',
-        'have', 'were', 'been', 'their', 'about', 'because', 'through',
-        'into', 'over', 'under', 'never', 'always', 'something', 'everything',
-        'itself', 'of', 'when', 'does', 'doesnt', 'dont'
-    ]);
-
-    const stopwordHits = words.filter(w => ENGLISH_STOPWORDS.has(w)).length;
-    const ratio = stopwordHits / words.length;
-
-    console.log(`[Tunescript] LRCLIB: Latin entry "${trackName}" stopword ratio: ${(ratio * 100).toFixed(1)}% (${stopwordHits}/${words.length}) → ${ratio > 0.04 ? 'suspect translation' : 'verified romanization'}`);
-
-    return ratio > 0.04;
 }
 
 /**
