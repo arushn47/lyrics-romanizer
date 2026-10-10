@@ -115,3 +115,60 @@ test('shared scripts and Roman lyrics do not default to Hindi', () => {
     assert.equal(c.detectLanguage('ତୁମେ ମୋର'), 'or');
     assert.equal(c.detectLanguage('تم میری جان'), null);
 });
+
+function modernSpotifyClock() {
+    const h = clockFixture('open.spotify.com');
+    h.c.document.querySelectorAll = selector => h.nodes[selector] || [];
+    h.nodes['[data-testid="context-item-info-title"]'] = { textContent: 'Song A', querySelector: () => ({ getAttribute: () => '/album/currentAlbum' }), getAttribute: () => null };
+    h.nodes['[data-testid="context-item-info-subtitles"] a'] = [{ textContent: 'Artist' }];
+    h.nodes['[data-testid="playback-position"]'] = { textContent: '1:02' };
+    h.nodes['[data-testid="playback-duration"]'] = { textContent: '3:00' };
+    h.nodes['[data-testid="playback-progressbar"] input[type="range"]'] = { min: '0', max: '180054', value: '62927', disabled: false, isConnected: true };
+    load(h.c, 'content/spotify-dom.js');
+    return h;
+}
+
+test('Spotify fractional range timing agrees with its visible clock and rejects stale or changed units', () => {
+    const h = modernSpotifyClock(), slider = h.nodes['[data-testid="playback-progressbar"] input[type="range"]'];
+    assert.equal(h.c.readPlaybackClock().position, 62.927);
+    assert.equal(h.c.readPlaybackClock().duration, 180.054);
+    assert.equal(h.c.readPlaybackClock().mediaId, ''); // Album link is never a track ID.
+    slider.getAttribute = () => '62543'; slider.value = '65000';
+    assert.equal(h.c.readPlaybackClock().position, 62.543); // Unsnapped player attribute.
+    delete slider.getAttribute;
+    slider.max = '180'; slider.value = '62'; assert.equal(h.c.readPlaybackClock().position, 62);
+    slider.max = '180054'; slider.value = '99000'; assert.equal(h.c.readPlaybackClock().position, 62);
+});
+
+test('Spotify wrapper/album title links still protect timelines during same-duration track changes', () => {
+    const h = modernSpotifyClock(), expected = h.c.getSpotifyPlaybackIdentity();
+    h.c.startTimedSync([{time: 5}, {time: 60}], {duration: 180, playbackIdentity: expected});
+    assert.equal(h.highlighted.at(-1), 1);
+    h.nodes['[data-testid="context-item-info-title"]'].textContent = 'Song B'; h.tick();
+    assert.equal(h.highlighted.at(-1), -1);
+});
+
+test('Spotify seek requires the player clock to acknowledge and rejects stale song controls', async () => {
+    const h = modernSpotifyClock(), slider = h.nodes['[data-testid="playback-progressbar"] input[type="range"]'];
+    h.c.HTMLInputElement = class {};
+    Object.defineProperty(h.c.HTMLInputElement.prototype, 'value', {set(value) { this.value = value; }});
+    h.c.Event = class { constructor(type) { this.type = type; } };
+    const events = [];
+    slider.dispatchEvent = event => { events.push(event.type); h.nodes['[data-testid="playback-position"]'].textContent = '0:40'; };
+    h.c.currentTrackInfo = { playbackIdentity: h.c.getSpotifyPlaybackIdentity() };
+    assert.equal(await h.c.seekPlaybackTime(40, 180), true);
+    assert.deepEqual(events, ['input', 'change']); assert.equal(slider.value, '40000');
+    h.nodes['[data-testid="context-item-info-title"]'].textContent = 'Song B';
+    assert.equal(await h.c.seekPlaybackTime(50, 180), false); assert.equal(events.length, 2);
+});
+
+test('a slider assignment without Spotify clock acknowledgement never reports a successful seek', async () => {
+    const h = modernSpotifyClock(), slider = h.nodes['[data-testid="playback-progressbar"] input[type="range"]'];
+    h.c.HTMLInputElement = class {};
+    Object.defineProperty(h.c.HTMLInputElement.prototype, 'value', {set(value) { this.value = value; }});
+    h.c.Event = class { constructor(type) { this.type = type; } };
+    slider.dispatchEvent = () => {};
+    const pending = h.c.seekPlaybackTime(40, 180);
+    for (let i = 0; i < 8; i++) { for (const [key, fn] of h.timers) { h.timers.delete(key); fn(); } await new Promise(setImmediate); }
+    assert.equal(await pending, false);
+});

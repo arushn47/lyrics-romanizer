@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "tunescript",
-  "version": "1.2.1",
-  "description": "Read pronunciation and English meaning alongside YouTube Music lyrics. Spotify integration is experimental.",
+  "name": "TuneScript",
+  "version": "1.3.2",
+  "description": "Sing along to YouTube Music with readable Roman lyrics and English translations. Uses your Gemini API key.",
   "permissions": [
     "storage",
     "activeTab"
   ],
   "host_permissions": [
-    "https://open.spotify.com/*",
     "https://music.youtube.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://lrclib.net/*"
@@ -31,33 +30,6 @@
   "content_scripts": [
     {
       "matches": [
-        "https://open.spotify.com/*"
-      ],
-      "js": [
-        "shared/constants.js",
-        "shared/request.js",
-        "shared/diagnostics.js",
-        "shared/cache.js",
-        "shared/lyrics.js",
-        "shared/matching.js",
-        "shared/lrclib.js",
-        "shared/providers.js",
-        "shared/gemini.js",
-        "shared/script-comparison.js",
-        "content/detector.js",
-        "content/panel.js",
-        "content/player-clock.js",
-        "content/sync.js",
-        "content/main.js",
-        "content/spotify.js"
-      ],
-      "css": [
-        "styles/panel.css"
-      ],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": [
         "https://music.youtube.com/*"
       ],
       "js": [
@@ -75,6 +47,7 @@
         "shared/request.js",
         "shared/diagnostics.js",
         "shared/cache.js",
+        "shared/performance.js",
         "shared/lyrics.js",
         "shared/matching.js",
         "shared/lrclib.js",

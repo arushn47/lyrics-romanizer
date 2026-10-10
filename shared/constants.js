@@ -3,12 +3,8 @@
 
 console.log('[Tunescript] constants.js loaded ✓');
 
-// Agreed product scope; the broader registry below also records script ambiguity.
-const LANGUAGE_TARGET_CODES = Object.freeze([
-    'hi', 'ta', 'te', 'ml', 'kn', 'pa', 'bn', 'mr', 'gu', 'ur',
-    'en', 'es', 'fr', 'pt', 'de', 'ja', 'ko', 'zh', 'ar',
-]);
-
+// Common script hints and display names, not a processing allowlist. Gemini
+// identifies source languages beyond this registry in the same song request.
 const LANGUAGE_REGISTRY = Object.freeze({
     hi: { name: 'Hindi', script: 'devanagari', group: 'india' },
     ta: { name: 'Tamil', script: 'tamil', group: 'india' },
@@ -40,12 +36,11 @@ const LANGUAGE_REGISTRY = Object.freeze({
     th: { name: 'Thai', script: 'thai', group: 'international' },
 });
 // Engine availability describes a processing route, not assessed language quality.
-// Extra registry entries help recognize ambiguity but are outside the agreed scope.
 const LANGUAGE_CAPABILITIES = Object.freeze(Object.fromEntries(
     Object.entries(LANGUAGE_REGISTRY).map(([code, language]) => [code, Object.freeze({
         ...language,
-        stage: LANGUAGE_TARGET_CODES.includes(code) ? language.group === 'india' ? 'launch' : 'experimental' : 'recognition-only',
-        contextualProcessing: LANGUAGE_TARGET_CODES.includes(code),
+        stage: 'gemini',
+        contextualProcessing: true,
         detectionScripts: Object.freeze(language.detectionScripts || [language.script]),
     })]),
 ));
@@ -58,11 +53,27 @@ const SCRIPT_DEFINITIONS = {
     cyrillic: [[0x0400, 0x052F]], hebrew: [[0x0590, 0x05FF]], thai: [[0x0E00, 0x0E7F]],
 };
 const LANGUAGE_NAMES = Object.fromEntries(Object.entries(LANGUAGE_REGISTRY).map(([code, value]) => [code, value.name]));
+function normalizeLyricLanguage(code) {
+    if (typeof code !== 'string' || code.length > 35 || !/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(code)) return null;
+    try {
+        const language = new Intl.Locale(code).language;
+        if (['und', 'mul', 'zxx'].includes(language)) return null;
+        // A recognized language name validates the code without limiting
+        // processing to the extension's small script-hint registry.
+        const name = LANGUAGE_NAMES[language] || new Intl.DisplayNames(['en'], { type: 'language', fallback: 'none' }).of(language);
+        return name ? language : null;
+    } catch { return null; }
+}
+function lyricLanguageName(code) {
+    const language = normalizeLyricLanguage(code);
+    if (!language) return '';
+    return LANGUAGE_NAMES[language] || new Intl.DisplayNames(['en'], { type: 'language', fallback: 'none' }).of(language) || '';
+}
 function validLyricLanguages(codes) {
-    return Array.isArray(codes) ? [...new Set(codes.filter(code => typeof code === 'string' && Object.hasOwn(LANGUAGE_NAMES, code)))] : [];
+    return Array.isArray(codes) ? [...new Set(codes.map(normalizeLyricLanguage).filter(Boolean))] : [];
 }
 function formatLyricLanguages(codes) {
-    return validLyricLanguages(codes).map(code => LANGUAGE_NAMES[code]).join(' + ');
+    return validLyricLanguages(codes).map(lyricLanguageName).join(' + ');
 }
 function collectLyricLanguages(rows) {
     const counts = new Map();
@@ -82,10 +93,9 @@ const SETTINGS_DEFAULTS = {
     geminiModel: 'gemini-3.5-flash-lite',
     engine: 'gemini',
     processingVersion: 0,
-    processingDelayMs: 900,
+    processingDelayMs: 400,
     estimatedScrolling: false,
     languageOverride: 'auto',
-    experimentalLanguages: false,
 };
 // One-time migration to the user's authorized Flash-Lite trial. Existing keys
 // and display preferences stay intact; weaker automatic fallbacks stay off.
@@ -131,10 +141,18 @@ async function detectLyricLanguage(text, signal) {
     if (signal?.aborted) throw new DOMException('Song changed', 'AbortError');
     if (!result?.isReliable || !Array.isArray(result.languages)) return null;
     const ranked = result.languages.filter(item => typeof item.language === 'string' && Number.isFinite(item.percentage)).sort((a, b) => b.percentage - a.percentage);
-    const best = ranked[0], code = best?.language.toLowerCase().split(/[-_]/)[0];
-    if (!LANGUAGE_TARGET_CODES.includes(code) || best.percentage < 70 || best.percentage - (ranked[1]?.percentage || 0) < 20) return null;
+    const best = ranked[0], code = normalizeLyricLanguage(best?.language);
+    if (!code || best.percentage < 70 || best.percentage - (ranked[1]?.percentage || 0) < 20) return null;
     // A classifier must agree with the script; Roman Indian lyrics need a
     // dedicated model route rather than speculative script reconstruction.
-    const scripts = LANGUAGE_CAPABILITIES[code].detectionScripts;
-    return scripts.some(script => details.scripts.includes(script)) ? code : null;
+    const scripts = LANGUAGE_CAPABILITIES[code]?.detectionScripts;
+    if (scripts) return scripts.some(script => details.scripts.includes(script)) ? code : null;
+    // For languages absent from our hint registry, check their usual Unicode
+    // script. Uncertain/unsupported script hints are left for Gemini to detect.
+    try {
+        const script = new Intl.Locale(code).maximize().script;
+        const pattern = new RegExp(`\\p{Script=${script}}`, 'u');
+        const letters = Array.from(text).filter(character => /\p{L}/u.test(character));
+        return letters.length && letters.filter(character => pattern.test(character)).length / letters.length >= 0.75 ? code : null;
+    } catch { return null; }
 }

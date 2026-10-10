@@ -31,6 +31,37 @@ let scrollListenerCleanup = null;
 let currentPanelView = null;
 let currentPanelStatus = null;
 let currentSourceInfo = { attribution: '', timingMode: 'unsynced' };
+let songScrollResetPending = false;
+let programmaticScrollGeneration = 0;
+let programmaticScrollTimer = null;
+
+function markProgrammaticScroll() {
+    const generation = ++programmaticScrollGeneration;
+    clearTimeout(programmaticScrollTimer);
+    isProgrammaticScroll = true;
+    programmaticScrollTimer = setTimeout(() => {
+        if (generation !== programmaticScrollGeneration) return;
+        isProgrammaticScroll = false;
+        programmaticScrollTimer = null;
+    }, 800);
+}
+
+function resetNewSongScroll(panel) {
+    // The host scroller survives a song change even when we replace the panel.
+    // Wait for real rows to mount; a loading view or a closed tab cannot consume
+    // the reset. Later translation/render updates keep the current position.
+    if (!songScrollResetPending || !panel.isConnected || currentPanelView?.type !== 'lyrics' || !panel.querySelector('.tunescript-line')) return;
+    songScrollResetPending = false;
+    markProgrammaticScroll();
+    const reset = element => {
+        if (typeof element.scrollTo === 'function') element.scrollTo({top: 0, behavior: 'instant'});
+        else element.scrollTop = 0;
+    };
+    reset(panel);
+    for (let ancestor = panel.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+        if (['auto', 'scroll'].includes(getComputedStyle(ancestor).overflowY)) reset(ancestor);
+    }
+}
 
 function setLyricsSourceInfo(attribution, timingMode, searchSummary = '') { currentSourceInfo = { attribution, timingMode, searchSummary }; }
 function appendSourceInfo(panel) {
@@ -39,6 +70,10 @@ function appendSourceInfo(panel) {
     const mode = currentSourceInfo.timingMode === 'synced' ? 'Time synced' : currentSourceInfo.timingMode === 'estimated' ? 'Estimated scrolling · timing may differ' : 'Unsynced';
     source.textContent = [mode, currentSourceInfo.attribution].filter(Boolean).join(' · ');
     panel.appendChild(source);
+    if (panel.dataset.spotifyCredit) {
+        const credit = document.createElement('div'); credit.className = 'tunescript-source';
+        credit.textContent = panel.dataset.spotifyCredit; panel.appendChild(credit);
+    }
     if (currentSourceInfo.searchSummary) {
         const note = document.createElement('div');
         note.className = 'tunescript-source tunescript-search-note';
@@ -107,10 +142,15 @@ function updateResumeDirection() {
     const scrollContainer = panel || document.documentElement;
     const containerRect = scrollContainer.getBoundingClientRect();
     const lineRect = activeLine.getBoundingClientRect();
+    let viewportTop = Math.max(0, containerRect.top);
+    for (let ancestor = panel?.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+        if (['auto', 'scroll', 'hidden', 'clip'].includes(getComputedStyle(ancestor).overflowY)) viewportTop = Math.max(viewportTop, ancestor.getBoundingClientRect().top);
+    }
 
     // Line is above viewport → arrow up; below → arrow down
     const arrow = btn.querySelector('.tunescript-resume-arrow');
-    if (lineRect.top < containerRect.top) {
+    if (!arrow) return;
+    if (lineRect.top < viewportTop) {
         arrow.textContent = '↑';
         btn.classList.add('tunescript-resume-up');
         btn.classList.remove('tunescript-resume-down');
@@ -148,10 +188,8 @@ function showResumeButton() {
         autoScrollPaused = false;
         hideResumeButton();
         if (lastActiveIndex >= 0) {
-            isProgrammaticScroll = true;
-            document.querySelector(`.tunescript-line[data-index="${lastActiveIndex}"]`)
-                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            setTimeout(() => { isProgrammaticScroll = false; }, 800);
+            markProgrammaticScroll();
+            scrollToLyricLine(lastActiveIndex);
         }
     });
 
@@ -181,10 +219,12 @@ function attachScrollListener(panel) {
         for (const { element, type, callback } of listeners) element.removeEventListener(type, callback);
     };
 
-    function onUserScroll() {
-        if (isProgrammaticScroll) return;
+    function pauseFollowing() {
         autoScrollPaused = true;
         showResumeButton();
+    }
+    function onUserScroll() {
+        if (!isProgrammaticScroll) pauseFollowing();
     }
 
     // 1. The panel itself may scroll (overflow-y: auto)
@@ -203,8 +243,8 @@ function attachScrollListener(panel) {
     }
 
     // 3. Wheel + touch on the panel always fire even if a parent scrolls.
-    listen(panel, 'wheel', onUserScroll);
-    listen(panel, 'touchmove', onUserScroll);
+    listen(panel, 'wheel', pauseFollowing);
+    listen(panel, 'touchmove', pauseFollowing);
 }
 
 function detachScrollListeners() {
@@ -216,6 +256,10 @@ function detachScrollListeners() {
 
 /** Reset scroll state on every new song. */
 function resetScrollState() {
+    programmaticScrollGeneration++;
+    clearTimeout(programmaticScrollTimer);
+    programmaticScrollTimer = null;
+    songScrollResetPending = true;
     autoScrollPaused = false;
     isProgrammaticScroll = false;
     lastActiveIndex = -1;
@@ -429,11 +473,11 @@ function renderPanel(processedLines, settings, duration = 0) {
                 e.stopPropagation();
                 e.preventDefault();
 
-                if (location.hostname.includes('music.youtube.com')) {
+                if (location.hostname.includes('music.youtube.com') || location.hostname.includes('open.spotify.com')) {
                     // YouTube Music: Use native player API via MAIN-world bridge.
                     // Passes track-relative line.time directly (e.g. 122.25s) —
                     // YTM's movie_player handles buffering, gapless stream, and scrubbing natively.
-                    console.log(`[Tunescript] 🎯 Click-to-seek (YTM native): line ${i} (${line.time.toFixed(2)}s)`);
+                    console.log(`[Tunescript] Click-to-seek: line ${i} (${line.time.toFixed(2)}s)`);
                     if (typeof seekPlaybackTime === 'function') seekPlaybackTime(line.time, duration).then(ok => {
                         if (!ok && panel.isConnected) showStatusBar('Seeking is unavailable while the player is changing. Try again.', 'warn');
                     });
@@ -464,6 +508,7 @@ function renderPanel(processedLines, settings, duration = 0) {
 
     console.log(`[Tunescript] renderPanel: ${processedLines.length} lines rendered`);
     attachScrollListener(panel);
+    resetNewSongScroll(panel);
     if (autoScrollPaused) panel.scrollTop = previousScrollTop;
     if (autoScrollPaused && scrollAncestor?.isConnected) scrollAncestor.scrollTop = previousAncestorScroll;
     if (lastActiveIndex >= 0) setActiveLine(lastActiveIndex);
@@ -471,31 +516,31 @@ function renderPanel(processedLines, settings, duration = 0) {
 
 /**
  * Check if a lyrics line is already in English, making translation redundant.
- * Returns true if: the source and translation are nearly identical, OR
- * the source text is predominantly ASCII Latin characters.
+ * Only hide a redundant copy. Latin script and shared English words cannot
+ * establish that a Romanized or mixed-language line is already English.
  */
 function _isEnglishLine(source, translation) {
     if (!source || !translation) return false;
 
     // Normalize for comparison: lowercase, strip punctuation & extra spaces
-    const norm = s => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    const norm = s => s.normalize('NFKC').toLowerCase().replace(/[\p{P}\p{S}]/gu, '').replace(/\s+/g, ' ').trim();
     const ns = norm(source);
     const nt = norm(translation);
 
     // If source and translation are nearly identical → skip
-    if (ns === nt) return true;
-    // Check word overlap: if 80%+ of words match, it's essentially the same
-    // (catches cases like "Oh my darling" → "Oh my darling!")
-    if (ns && nt) {
-        const srcWords = ns.split(' ');
-        const tgtWords = new Set(nt.split(' '));
-        const overlap = srcWords.filter(w => tgtWords.has(w)).length;
-        if (overlap / Math.max(srcWords.length, 1) >= 0.8) return true;
-    }
-
-    return false;
+    return !!ns && ns === nt;
 }
 
+function scrollToLyricLine(index) {
+    const row = document.querySelector(`.tunescript-line[data-index="${index}"]`);
+    if (!row) return;
+    const panel = document.getElementById('tunescript-panel');
+    if (panel?.dataset.spotifyViewport === 'true') {
+        const rowRect = row.getBoundingClientRect(), panelRect = panel.getBoundingClientRect();
+        const top = Math.max(0, panel.scrollTop + rowRect.top - panelRect.top - (panel.clientHeight - rowRect.height) / 2);
+        panel.scrollTo({ top, behavior: 'smooth' });
+    } else row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 function setActiveLine(index) {
     lastActiveIndex = index;
 
@@ -508,11 +553,8 @@ function setActiveLine(index) {
 
     // Only auto-scroll if the user hasn't manually scrolled
     if (!autoScrollPaused) {
-        isProgrammaticScroll = true;
-        document.querySelector(`.tunescript-line[data-index="${index}"]`)
-            ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // Clear the flag after the smooth scroll animation finishes (~600ms)
-        setTimeout(() => { isProgrammaticScroll = false; }, 800);
+        markProgrammaticScroll();
+        scrollToLyricLine(index);
     } else {
         // Update arrow direction while paused so it always points the right way
         updateResumeDirection();
@@ -531,6 +573,7 @@ function clearLyricsPanel({ forgetContent = false } = {}) {
     detachScrollListeners();
     document.querySelector('ytmusic-player-page')?.classList.remove('tunescript-lyrics-visible');
     document.getElementById('tunescript-panel')?.remove();
+    document.body.classList.remove('tunescript-spotify-lyrics-open');
     hideResumeButton();
     restoreNativeLyricsElements();
     if (forgetContent) {
@@ -572,7 +615,7 @@ function injectPanel(panel) {
     if (injectInterval) clearInterval(injectInterval);
 
     // Try immediately
-    if (_injectPanelCore(panel)) return;
+    if (_injectPanelCore(panel)) { resetNewSongScroll(panel); return; }
 
     // If it failed and we are on YTM, it means the Polymer container hasn't
     // hydrated yet. Poll every 500ms for up to 10 seconds.
@@ -581,7 +624,9 @@ function injectPanel(panel) {
         let attempts = 0;
         injectInterval = setInterval(() => {
             attempts++;
-            if (_injectPanelCore(panel) || attempts >= 20) {
+            const mounted = _injectPanelCore(panel);
+            if (mounted) resetNewSongScroll(panel);
+            if (mounted || attempts >= 20) {
                 if (attempts >= 20) console.warn('[Tunescript] injectPanel: timed out after 10s');
                 clearInterval(injectInterval);
             }
@@ -591,9 +636,40 @@ function injectPanel(panel) {
 
 function _injectPanelCore(panel) {
     // ── Spotify ───────────────────────────────────────────────────────────────
-    const spotifyContainer = document.querySelector('[data-testid="lyrics-container"]');
+    const spotifyContainer = typeof getSpotifyLyricsContainer === 'function' ? getSpotifyLyricsContainer() : document.querySelector('[data-testid="lyrics-container"]');
     if (spotifyContainer) {
         if (typeof isSpotifyLyricsVisible === 'function' && !isSpotifyLyricsVisible()) return false;
+        panel.dataset.platform = 'spotify';
+        const viewport = typeof getSpotifyLyricsViewport === 'function' ? getSpotifyLyricsViewport() : null;
+        if (viewport) {
+            // Native Spotify may scroll/transform its own pages on every line.
+            // Keep their geometry intact; our body portal cannot be moved by it.
+            restoreNativeLyricsElements();
+            document.body.classList.add('tunescript-spotify-lyrics-open');
+            panel.dataset.spotifyViewport = 'true';
+            const credit = Array.from(spotifyContainer.children).find(child => child.getAttribute('data-testid') !== 'lyrics-line' && child !== panel);
+            panel.dataset.spotifyCredit = credit?.textContent?.trim().slice(0, 200) || '';
+            if (panel.parentNode !== document.body) document.body.appendChild(panel);
+            for (const [property, value] of Object.entries(viewport)) {
+                const pixels = value + 'px'; if (panel.style[property] !== pixels) panel.style[property] = pixels;
+            }
+            return true;
+        }
+        if (panel.dataset.spotifyViewport === 'true') {
+            document.body.classList.remove('tunescript-spotify-lyrics-open');
+            delete panel.dataset.spotifyViewport; delete panel.dataset.spotifyCredit;
+            for (const property of ['top', 'left', 'width', 'height']) panel.style.removeProperty(property);
+        }
+        const children = Array.from(spotifyContainer.children);
+        const rows = children.filter(child => child.getAttribute('data-testid') === 'lyrics-line');
+        const hasInlineCredit = rows.length && children.some(child => child !== panel && child.getAttribute('data-testid') !== 'lyrics-line');
+        if (hasInlineCredit) {
+            // Keep the native credit in place. Hiding the whole group would
+            // also hide its attribution; hide only Spotify's lyric rows.
+            if (panel.parentNode !== spotifyContainer) spotifyContainer.insertBefore(panel, spotifyContainer.firstChild);
+            rows.forEach(hideNativeLyricsElement);
+            return true;
+        }
         if (!spotifyContainer.parentNode.contains(panel)) {
             console.log('[Tunescript] injectPanel: replacing Spotify lyrics container');
             spotifyContainer.parentNode.insertBefore(panel, spotifyContainer.nextSibling);

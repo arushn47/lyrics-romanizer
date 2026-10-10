@@ -1,6 +1,6 @@
 # TuneScript data flow
 
-Current Gemini-only build, 10 October 2026.
+Current Gemini-only build, 11 October 2026.
 
 ## What leaves the browser
 
@@ -16,6 +16,8 @@ Google receives the whole-song text for pronunciation and English meaning. This 
 Sync storage holds display preferences, the Gemini model, automatic-language setting, processing migration marker and Gemini API key. Browser sync may copy these settings between devices. The masked input conceals the key on screen; TuneScript does not supply an encrypted credential vault.
 
 Local storage holds recording/text caches, provenance, active-song metadata, match choices, legacy imported lyrics, request cooldowns and optional diagnostics. Completed entries are read for up to 90 days, source-only entries for seven days, with at most 200 processed cache entries. Identical source text can reuse a Gemini result while each recording retains its own timestamps.
+
+Local processing measurements hold at most 30 numeric Gemini request samples and their summary: line count, response/queue duration and provider-reported token counts. Processed caches also keep numeric phase timings. Measurements exclude lyrics, titles, page URLs and keys, and are never uploaded. Cached replay makes no new timing sample or AI request. Clear all cached lyrics retains the numeric history. See [processing time](PERFORMANCE.md).
 
 Migration deletes retired model connection credentials and model-generated cache entries. It retains the Gemini key, Gemini results, display preferences, imports and provider cooldowns. Clear all cached lyrics deletes lyric caches; it preserves keys/settings and makes no AI request. Re-transliterate this song deletes that recording and its linked text result before starting a new processing attempt.
 

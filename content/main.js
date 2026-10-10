@@ -17,8 +17,9 @@ let currentSongGeneration = 0;
 let currentSongRequest = null;
 let currentTrackInfo = null;
 let currentCacheKeyValue = null;
+let currentProcessingTiming = null;
 chrome.runtime?.onMessage?.addListener((message, _sender, reply) => {
-    if (message?.type === 'tunescript-state') reply({ currentTrack: currentTrackInfo, currentCacheKey: currentCacheKeyValue, currentSongTitle: currentTrackInfo?.title || '', detectedLang: currentDetectedLanguage || '' });
+    if (message?.type === 'tunescript-state') reply({ currentTrack: currentTrackInfo, currentCacheKey: currentCacheKeyValue, currentSongTitle: currentTrackInfo?.title || '', detectedLang: currentDetectedLanguage || '', processingTiming: currentProcessingTiming });
     if (message?.type === 'tunescript-rerun') {
         rerunCurrentSong(message.cacheKey).then(ok => reply({ ok }), () => reply({ ok: false }));
         return true;
@@ -31,6 +32,10 @@ function publishDetectedLanguages(codes) {
     // A second tab may already have stored the same label, so a storage change
     // alone cannot reliably notify an open popup when this song finishes.
     chrome.runtime?.sendMessage?.({ type: 'tunescript-language-changed' }, () => { void chrome.runtime.lastError; });
+}
+function publishProcessingTiming(timing) {
+    currentProcessingTiming = timing;
+    chrome.storage.local.set({ currentProcessingTiming: timing });
 }
 const displaySettingOverrides = {};
 function latestDisplaySettings(settings) { return { ...settings, ...displaySettingOverrides }; }
@@ -60,6 +65,7 @@ function beginSongRequest() {
     currentTrackInfo = null;
     currentCacheKeyValue = null;
     currentDetectedLanguage = '';
+    currentProcessingTiming = null;
     stopSync();
     resetScrollState();
     if (typeof clearLyricsPanel === 'function') clearLyricsPanel({ forgetContent: true });
@@ -190,6 +196,8 @@ async function handleSongChange(options) {
 }
 
 async function processSongChange(track, request) {
+    const now = () => typeof lyricTimingNow === 'function' ? lyricTimingNow() : Date.now();
+    const processingStarted = now();
     const { title, artist, duration, platform, getDomLyrics } = track;
     const { signal, isCurrent } = request;
     // Guard against extension context invalidation (extension reloaded while tab is open)
@@ -224,7 +232,7 @@ async function processSongChange(track, request) {
     // even when no key is set — useful for testing.
 
     const cacheKey = makeCacheKey(platform, title, artist, { ...track, engine: 'gemini', model: settings.geminiModel, language: settings.languageOverride, estimatedScrolling: settings.estimatedScrolling });
-    currentTrackInfo = { platform, title, artist, artists: track.artists || [artist], duration, mediaId: track.mediaId || '', album: track.album || '', year: track.year || null, mode: track.mode || '' };
+    currentTrackInfo = { platform, title, artist, artists: track.artists || [artist], duration, durationVerified: !!track.durationVerified, mediaId: track.mediaId || '', playbackIdentity: track.playbackIdentity || '', album: track.album || '', year: track.year || null, mode: track.mode || '' };
     currentCacheKeyValue = cacheKey;
     console.log(`[Tunescript] Cache key: ${cacheKey}`);
 
@@ -242,12 +250,14 @@ async function processSongChange(track, request) {
     // If user has a Gemini key, do NOT accept cached offline-fallback entries — upgrade them to AI!
     const allowFallback = !settings.geminiApiKey;
     const transformComplete = (source, roman, meaning) => typeof isCompleteLyricTransform !== 'function' || isCompleteLyricTransform(source, roman, meaning);
-    let cached = await getCached(cacheKey, allowFallback);
+    const storedRecording = await getCached(cacheKey, true);
+    let cached = storedRecording?.isFallback && !allowFallback ? null : storedRecording;
     if (!isCurrent()) return;
     if (cached?.metadata?.engine && !['gemini', 'source'].includes(cached.metadata.engine)) cached = null;
-    if (cached && !cached.isFallback && !cached.data.every(line => transformComplete(line.original, line.romanized, line.translation, cached.metadata?.language))) cached = null;
+    if (cached && !cached.isFallback && !cached.metadata?.partial && !cached.data.every(line => transformComplete(line.original, line.romanized, line.translation))) cached = null;
     let savedSynced = false;
     if (cached) {
+        publishProcessingTiming({ ...cached.metadata?.performance, cached: true, lineCount: cached.data.length });
         console.log('[Tunescript] ✅ Cache HIT — rendering immediately');
         currentProcessedLines = cached.data;  // keep for live settings re-render
         publishDetectedLanguages(cached.metadata?.languages ?? [cached.metadata?.language]);
@@ -268,7 +278,7 @@ async function processSongChange(track, request) {
 
     // ── Step 4: Search enabled timing-capable providers ─────────────────────
     const savedSource = summary => ({ synced: savedSynced, lines: cached.data.map(line => ({ id: line.id, type: line.type, time: line.time, isEstimated: line.isEstimated, text: line.original, ...(cached.metadata?.nativeSource ? { romanizedSource: line.romanized } : {}) })), attribution: cached.metadata?.attribution || 'Saved lyrics', provider: cached.metadata?.provider || 'native', id: cached.metadata?.providerId || null, searchSummary: summary, nativeSource: cached.metadata?.nativeSource, nativeAttribution: cached.metadata?.nativeAttribution });
-    const sourceOptions = { preferNativeForTranslation: false,
+    const sourceOptions = { preferNativeForTranslation: false, relatedLyrics: track.relatedLyrics,
         onSynced: candidate => {
             if (!isCurrent() || !candidate.synced || !sourceOptions.preferNativeForTranslation) return;
             const source = typeof cleanLyricLines === 'function' ? cleanLyricLines(candidate.lines, track).lines : candidate.lines;
@@ -281,7 +291,22 @@ async function processSongChange(track, request) {
             startTimedSync(rows, { duration, songStartVideoTime });
             showStatusBar('Checking native lyrics for translation…', 'info');
         } };
-    let lrcResult = savedSynced ? savedSource(cached.metadata?.searchSummary) : typeof resolveLyricSources === 'function' ? await resolveLyricSources(track, getDomLyrics, signal, sourceOptions) : await fetchLRCLIB(title, artist, duration, signal, track);
+    const sourceKey = typeof lyricSourceCacheKey === 'function' ? lyricSourceCacheKey(track) : null;
+    const savedTiming = sourceKey ? await getCached(sourceKey, true) : null;
+    if (!isCurrent()) return;
+    const priorTimedRows = storedRecording?.metadata?.timingMode === 'synced' ? storedRecording.data.map(line => ({
+        id: line.id, type: line.type, time: line.time, text: line.original,
+        ...(storedRecording.metadata.nativeSource ? { romanizedSource: line.romanized } : {}),
+    })) : null;
+    const rememberedRows = savedTiming?.data || priorTimedRows;
+    const rememberedInfo = savedTiming?.metadata || storedRecording?.metadata;
+    const validRememberedTiming = rememberedRows?.length && rememberedRows.every(line => Number.isFinite(line.time) && !line.isEstimated) &&
+        (typeof validLyricTimeline !== 'function' || validLyricTimeline(rememberedRows, duration));
+    let lrcResult = savedSynced ? savedSource(cached.metadata?.searchSummary) : validRememberedTiming ? {
+        lines: rememberedRows, synced: true, attribution: rememberedInfo.attribution, provider: rememberedInfo.provider,
+        id: rememberedInfo.providerId, nativeSource: rememberedInfo.nativeSource, nativeAttribution: rememberedInfo.nativeAttribution,
+        searchSummary: '',
+    } : typeof resolveLyricSources === 'function' ? await resolveLyricSources(track, getDomLyrics, signal, sourceOptions) : await fetchLRCLIB(title, artist, duration, signal, track);
     if (!isCurrent()) return;
     if (lrcResult?.ambiguous) {
         showMatchPanel(lrcResult.candidates, async candidate => {
@@ -303,7 +328,7 @@ async function processSongChange(track, request) {
         const summary = lrcResult?.searchSummary || 'No verified synced match in the checked sources.';
         if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(cached.metadata?.attribution || 'Saved lyrics', cached.metadata?.timingMode || 'unsynced', summary);
         renderPanel(cached.data, latestDisplaySettings(settings), currentSongDuration);
-        if (cached.isFallback) showStatusBar(cached.metadata?.processingWarning || 'Saved basic pronunciation or original text; contextual translation is unavailable.', 'warn');
+        if (cached.isFallback || cached.metadata?.processingWarning) showStatusBar(cached.metadata?.processingWarning || 'Saved basic pronunciation or original text; contextual translation is unavailable.', 'warn');
         else hideStatusBar();
         return;
     }
@@ -341,11 +366,20 @@ async function processSongChange(track, request) {
         isSynced = false;
         rawLines = rawLines.map(line => ({ ...line, time: null }));
     }
+    if (isSynced && sourceKey && !savedTiming) {
+        await setCached(sourceKey, rawLines, false, {
+            attribution: lrcResult?.attribution || 'Lyrics from LRCLIB', provider: lrcResult?.provider || 'lrclib',
+            providerId: lrcResult?.id || null, timingMode: 'synced', nativeSource: lrcResult?.nativeSource,
+            nativeAttribution: lrcResult?.nativeAttribution,
+        });
+        if (!isCurrent()) return;
+    }
     if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(lrcResult?.attribution || 'Lyrics from the music platform', isSynced ? 'synced' : 'unsynced', lrcResult?.searchSummary);
     if (!isSynced && settings.estimatedScrolling && typeof estimateLineTimestamps === 'function') {
         rawLines = estimateLineTimestamps(rawLines, duration);
         if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(lrcResult?.attribution || 'Lyrics from the music platform', 'estimated', lrcResult?.searchSummary);
     }
+    const sourceMs = Math.max(0, now() - processingStarted);
 
     // ── Step 4.5: Show raw lyrics immediately ─────────────────────────────────
     // Display fetched lyrics right away while romanization + translation
@@ -373,7 +407,7 @@ async function processSongChange(track, request) {
     const fullText = rawLines.map(l => l.text).join(' ');
     let lang = typeof detectLyricLanguage === 'function' ? await detectLyricLanguage(fullText, signal) : detectLanguage(fullText);
     if (!isCurrent()) return;
-    console.log(`[Tunescript] Language detected: ${lang ? LANGUAGE_NAMES[lang] : 'none (not an Indic script)'}`);
+    console.log(`[Tunescript] Language detected: ${lang ? lyricLanguageName(lang) : 'pending Gemini detection'}`);
 
     if (!lang && rawLines.length > 0) {
         // Short, mixed or Roman text may not identify a language reliably.
@@ -395,9 +429,11 @@ async function processSongChange(track, request) {
     // or authentication failures with smaller requests.
     const plainLines = rawLines.map(line => line.text);
     const reusableText = cached && !cached.isFallback && cached.data.length === rawLines.length && rawLines.every((line, i) => line.text === cached.data[i].original);
-    let aiResults = reusableText ? cached.data.map(line => ({ r: line.romanized, t: line.translation, languages: line.languages })) : null;
+    let aiResults = reusableText ? cached.data.map(line => ({ r: line.romanized, t: line.translation, languages: line.languages, complete: line.complete })) : null;
     let isFallbackResult = false;
     let processingWarning = '';
+    let aiTiming = reusableText ? cached.metadata?.performance : null;
+    let settleMs = 0;
     const cumulativeResults = [];
     const onProgress = chunk => {
         if (!isCurrent()) return;
@@ -419,17 +455,20 @@ async function processSongChange(track, request) {
     if (!isCurrent()) return;
     let savedTransform = transformKey ? await getCached(transformKey, false) : null;
     if (!isCurrent()) return;
-    if (savedTransform && (savedTransform.data.length !== plainLines.length || !savedTransform.data.every((entry, i) => transformComplete(plainLines[i], entry.r, entry.t, lang)))) savedTransform = null;
+    if (savedTransform && (savedTransform.data.length !== plainLines.length || (!savedTransform.metadata?.partial && !savedTransform.data.every((entry, i) => transformComplete(plainLines[i], entry.r, entry.t))))) savedTransform = null;
     if (savedTransform) aiResults = savedTransform.data;
+    if (savedTransform) aiTiming = savedTransform.metadata?.performance;
     try {
         if (aiResults) {
             // Transformation reuse never reuses another recording's timestamps.
         } else if (settings.geminiApiKey) {
-            if (typeof waitForRequestSettle === 'function') await waitForRequestSettle(Math.max(0, Math.min(settings.processingDelayMs ?? 900, 5000)), signal);
+            const settleStarted = now();
+            if (typeof waitForRequestSettle === 'function') await waitForRequestSettle(Math.max(0, Math.min(settings.processingDelayMs ?? 400, 5000)), signal);
+            settleMs = Math.max(0, now() - settleStarted);
             if (!isCurrent()) return;
             showStatusBar('Romanizing and translating…', 'info');
             try {
-                aiResults = await romanizeAndTranslate(plainLines, lang, settings.geminiApiKey, signal, onProgress, settings.geminiModel);
+                aiResults = await romanizeAndTranslate(plainLines, lang, settings.geminiApiKey, signal, onProgress, settings.geminiModel, timing => { aiTiming = timing; });
             } catch (error) {
                 if (!isCurrent() || error.name === 'AbortError') return;
                 if (engine === 'gemini' && settings.geminiModel !== 'gemini-3.5-flash-lite' && error.code === 'output' && plainLines.length > 15) {
@@ -449,6 +488,8 @@ async function processSongChange(track, request) {
         usedEngine = 'source';
         aiResults = plainLines.map(text => ({ r: text, t: '' }));
     }
+    const incompleteLines = aiResults.filter(row => row.complete === false).length;
+    if (incompleteLines) processingWarning = `Pronunciation or translation is missing for ${incompleteLines} ${incompleteLines === 1 ? 'line' : 'lines'}. Other results are saved. Use “Re-transliterate this song” to try again.`;
 
     if (!isCurrent()) return;
 
@@ -467,6 +508,7 @@ async function processSongChange(track, request) {
         romanized: line.romanizedSource ?? aiResults[i]?.r ?? line.text,
         translation: aiResults[i]?.t ?? '',
         languages: validLyricLanguages(aiResults[i]?.languages),
+        complete: aiResults[i]?.complete,
     }));
 
     // ── Step 8: Cache and re-render with full data ────────────────────────────
@@ -474,7 +516,9 @@ async function processSongChange(track, request) {
     const savedLanguages = savedTransform?.metadata?.languages ?? (reusableText ? cached.metadata?.languages : undefined);
     const sourceLanguages = languages.length || aiResults.some(row => Array.isArray(row.languages)) ? languages : validLyricLanguages(savedLanguages ?? [lang]);
     publishDetectedLanguages(sourceLanguages);
-    const metadata = { attribution: lrcResult?.attribution || 'Lyrics from the music platform', provider: lrcResult?.provider || 'native', providerId: lrcResult?.id || null, timingMode: isSynced ? 'synced' : rawLines.some(line => line.isEstimated) ? 'estimated' : 'unsynced', searchSummary: lrcResult?.searchSummary || '', engine: usedEngine, model: usedEngine === 'gemini' ? settings.geminiModel : null, language: lang, languages: sourceLanguages, complete: !isFallbackResult, transformKey, processingWarning };
+    const metadata = { attribution: lrcResult?.attribution || 'Lyrics from the music platform', provider: lrcResult?.provider || 'native', providerId: lrcResult?.id || null, timingMode: isSynced ? 'synced' : rawLines.some(line => line.isEstimated) ? 'estimated' : 'unsynced', searchSummary: lrcResult?.searchSummary || '', engine: usedEngine, model: usedEngine === 'gemini' ? settings.geminiModel : null, language: lang, languages: sourceLanguages, complete: !isFallbackResult && !incompleteLines, partial: !!incompleteLines, transformKey, processingWarning };
+    metadata.performance = { ...aiTiming, lineCount: plainLines.length, sourceMs, settleMs,
+        totalMs: Math.max(0, now() - processingStarted), cached: !!(savedTransform || reusableText) };
     if (lrcResult?.nativeSource) { metadata.nativeSource = lrcResult.nativeSource; metadata.nativeAttribution = lrcResult.nativeAttribution; }
     if (transformKey && !isFallbackResult && !savedTransform && usedEngine === engine) await setCached(transformKey, aiResults, false, metadata);
     if (!isCurrent()) return;
@@ -483,6 +527,7 @@ async function processSongChange(track, request) {
     if (typeof recordDiagnostic === 'function') recordDiagnostic({ operation: 'selection', code: 'ok', platform, ...metadata });
     console.log('[Tunescript] Cached ✓');
     currentProcessedLines = processed;  // keep for live settings re-render
+    publishProcessingTiming(metadata.performance);
     renderPanel(processed, latestDisplaySettings(settings), currentSongDuration);
     startTimedSync(processed, { skipSettle: true, duration, songStartVideoTime });
     if (isFallbackResult || processingWarning) showStatusBar(processingWarning || 'Translation unavailable. Showing source lyrics.', 'warn');

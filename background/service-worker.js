@@ -1,4 +1,4 @@
-if (typeof importScripts === 'function') importScripts('../shared/diagnostics.js', 'request-service.js');
+if (typeof importScripts === 'function') importScripts('../shared/performance.js', '../shared/diagnostics.js', 'request-service.js');
 const requestService = new TuneRequestService({
     clientVersion: chrome.runtime.getManifest?.()?.version || 'development',
     fetch: (...args) => fetch(...args),

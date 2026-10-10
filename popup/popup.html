@@ -25,8 +25,9 @@
   <main class="mz-content" tabindex="-1">
     <div class="mz-song">
       <span class="mz-section-label">Current song</span>
-      <div id="currentSong" class="mz-song-title">Open a music tab</div>
+      <div id="currentSong" class="mz-song-title">Open YouTube Music</div>
       <div id="detected-lang" class="lang-badge" hidden></div>
+      <p id="processingTiming" class="mz-processing-timing" hidden></p>
     </div>
 
   <!-- ── Toggles Section ────────────────────────────────────────────── -->
@@ -133,10 +134,12 @@
     <button id="clearCurrentCache" class="mz-action-primary" disabled>↻ Re-transliterate this song</button>
     <button id="clearCache" class="mz-action-secondary">Clear all cached lyrics</button>
     <p id="actionStatus" role="status" aria-live="polite"></p>
+    <a id="githubLink" class="mz-github-link" href="https://github.com/arushn47/lyrics-romanizer#readme" target="_blank" rel="noopener noreferrer" aria-label="Install locally from GitHub (opens in a new tab)">Install locally from GitHub ↗</a>
   </footer>
   <script src="../shared/request.js"></script>
   <script src="../shared/constants.js"></script>
   <script src="../shared/cache.js"></script>
+  <script src="../shared/performance.js"></script>
   <script src="popup.js"></script>
 </body>
 

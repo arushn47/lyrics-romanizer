@@ -33,6 +33,7 @@ const YTM_SELECTORS = {
 
 let lastYTMTrackKey = null;
 let ytmMetadataRetryPending = false;
+let pendingYTMPreviousEdition = null;
 
 // Restore the latest view when YTM replaces its player or lyrics content.
 
@@ -266,6 +267,17 @@ function _getYTMDuration(attempt = 0) {
     return 0;
 }
 
+// A duration observed during playback is metadata, not a song-change event.
+// Confirm it against the recording-bound bridge once, then keep it through
+// pauses, player teardown, outros and rewinds for this song request.
+function hasVerifiedYTMDuration(duration) {
+    const native = typeof nativeClockState !== 'undefined' ? nativeClockState : null;
+    return duration > 0 && native?.receivedAt > Date.now() - 1500 &&
+        native.mediaId === getVideoId(location.href) && !native.ad &&
+        !document.getElementById('movie_player')?.classList.contains('ad-showing') &&
+        Number.isFinite(native.duration) && native.duration > 0 && Math.abs(native.duration - duration) <= 1;
+}
+
 /**
  * Parse a time string like "5:28" or "1:02:15" into seconds.
  */
@@ -303,8 +315,11 @@ async function waitForYTMTrackInfo(maxWaitMs = 10000, intervalMs = 300, signal =
         if (title && artist && (duration > 0 || attempt >= 6)) {
             console.log(`[Tunescript] Track info ready after ${attempt} attempt(s): "${title}" by "${artist}" (${duration.toFixed(1)}s)`);
             const yearPart = bylineParts.find(part => /^\d{4}$/.test(part));
-            const album = bylineParts.length > 1 && !/^\d{4}$/.test(bylineParts[1]) ? bylineParts[1] : '';
-            return { title, artist, duration, artists: typeof creditedArtists === 'function' ? creditedArtists(artist) : [artist], album, year: yearPart ? Number(yearPart) : null, mediaId: getVideoId(location.href), mode: document.querySelector('ytmusic-player')?.getAttribute('playback-mode') || 'unknown' };
+            const albumPart = bylineParts[1] || '';
+            // Video bylines contain view/like counts, not an album name.
+            const album = albumPart && !/^\d{4}$/.test(albumPart) && !/\b(?:views?|likes?)\b/i.test(albumPart) ? albumPart : '';
+            const artists = typeof creditedArtists === 'function' ? [...new Set([...creditedArtists(artist), ...titleFeaturedArtists(title)])] : [artist];
+            return { title, artist, duration, durationVerified: hasVerifiedYTMDuration(duration), artists, album, year: yearPart ? Number(yearPart) : null, mediaId: getVideoId(location.href), mode: document.querySelector('ytmusic-player')?.getAttribute('playback-mode') || 'unknown' };
         }
         console.log(`[Tunescript] waitForYTMTrackInfo attempt ${attempt}: title="${title}" artist="${bylineParts.join(' • ')}" duration=${duration}s — retrying in ${intervalMs}ms`);
         await new Promise(r => setTimeout(r, intervalMs));
@@ -395,12 +410,17 @@ async function onYTMSongChange(force = false, retry = false) {
     const mediaId = getVideoId(location.href);
     if (!force && !retry && mediaId && mediaId === lastYTMTrackKey) return;
 
+    const previousEdition = force ? null : currentTrackInfo && currentProcessedLines?.length
+        ? { track: { ...currentTrackInfo }, attribution: typeof currentSourceInfo !== 'undefined' ? currentSourceInfo.attribution : '', lines: currentProcessedLines.map(line => ({ id: line.id, type: line.type, text: line.original })) } : pendingYTMPreviousEdition;
+    // URL and playback-mode mutations can arrive separately during one switch.
+    // Retain the text snapshot until the current metadata request settles.
+    pendingYTMPreviousEdition = previousEdition;
     const request = beginSongRequest();
     ytmMetadataRetryPending = false;
     lastYTMTrackKey = mediaId || null;
     showLoadingPanel();
     try {
-        await prepareYTMSongChange(force, request);
+        await prepareYTMSongChange(force, request, previousEdition);
     } catch (error) {
         if (!request.isCurrent() || error.name === 'AbortError') return;
         lastYTMTrackKey = null;
@@ -409,7 +429,7 @@ async function onYTMSongChange(force = false, retry = false) {
     }
 }
 
-async function prepareYTMSongChange(force, request) {
+async function prepareYTMSongChange(force, request, previousEdition = null) {
     console.log(`[Tunescript] onYTMSongChange triggered${force ? ' (forced)' : ''}, polling for track info…`);
 
     const info = await waitForYTMTrackInfo(10000, 300, request.signal);
@@ -454,9 +474,11 @@ async function prepareYTMSongChange(force, request) {
         ...info,
         platform: 'ytmusic',
         request,
+        relatedLyrics: typeof sameSongAcrossYTMMode === 'function' && sameSongAcrossYTMMode(previousEdition?.track, { ...info, platform: 'ytmusic' }) ? previousEdition : null,
         getDomLyrics: () => settings.autoOpenLyrics ? scrapeNativeLyricsYTM({ signal: request.signal, force }) : getDomLyricsYTM({ signal: request.signal, force }),
     });
     if (!request.isCurrent()) return;
+    pendingYTMPreviousEdition = null;
 
 }
 
@@ -470,34 +492,55 @@ function getVideoId(url) {
 
 let ytmCurrentVideoId = getVideoId(location.href);
 let ytmCurrentMode = null;
+let ytmDurationRecovery = null;
 console.log('[Tunescript] Starting URL observer. Current URL:', location.href);
 
-function checkYTMNavigation() {
+function checkYTMNavigation(heartbeat = false) {
     const newId = getVideoId(location.href);
-    const mode = document.querySelector('ytmusic-player')?.getAttribute('playback-mode') || null;
+    // ATV and ATV_PREFERRED describe the same Song edition. Likewise for
+    // video aliases. Only a real Song/Video switch invalidates its lyrics.
+    const mode = ytmPlaybackKind(document.querySelector('ytmusic-player')?.getAttribute('playback-mode'));
     if (newId && newId !== ytmCurrentVideoId) {
         console.log(`[Tunescript] Video ID changed: ${ytmCurrentVideoId} → ${newId}`);
         ytmCurrentVideoId = newId;
         ytmCurrentMode = mode;
+        ytmDurationRecovery = null;
         onYTMSongChange();
         return;
     }
     if (mode && ytmCurrentMode && mode !== ytmCurrentMode) {
         ytmCurrentMode = mode;
+        ytmDurationRecovery = null;
         onYTMSongChange(false, true);
         return;
     }
     if (mode) ytmCurrentMode = mode;
-    // Metadata can arrive during an ad or before the player finishes switching.
-    // Recover the lookup once its recording duration is known, without clearing
-    // completed transformations or treating an ad's duration as a new song.
+    // Repair missing/unconfirmed initial metadata only. Re-reading a confirmed
+    // duration near the final lyric used to clear the panel and start a fresh
+    // search with a different cache key for the very same recording.
     if (currentTrackInfo?.platform === 'ytmusic' && currentTrackInfo.mediaId === newId) {
         if (typeof readPlaybackClock === 'function') readPlaybackClock();
-        const duration = _getYTMDuration(5);
-        if (duration > 0 && Math.abs(duration - (currentTrackInfo.duration || 0)) > 1) {
-            onYTMSongChange(false, true);
-            return;
-        }
+        if (!currentTrackInfo.durationVerified) {
+            const duration = _getYTMDuration(5);
+            const expected = currentTrackInfo.duration || 0;
+            const tolerance = Math.max(2, Math.min(5, expected * 0.02));
+            const verified = hasVerifiedYTMDuration(duration);
+            if (expected > 0 && duration > 0 && Math.abs(duration - expected) <= tolerance) {
+                if (verified) currentTrackInfo.durationVerified = true;
+                ytmDurationRecovery = null;
+            } else if (duration > 0 && (!expected || verified)) {
+                // Body mutations (including our own lyric rendering) are not
+                // independent samples. Require two one-second clock polls.
+                if (heartbeat === true) {
+                    if (ytmDurationRecovery?.request === currentSongRequest && Math.abs(ytmDurationRecovery.duration - duration) <= 1) {
+                        ytmDurationRecovery = null;
+                        onYTMSongChange(false, true);
+                        return;
+                    }
+                    ytmDurationRecovery = { request: currentSongRequest, duration };
+                }
+            } else ytmDurationRecovery = null;
+        } else ytmDurationRecovery = null;
     }
     if (ytmMetadataRetryPending &&
         document.querySelector(YTM_SELECTORS.title)?.textContent?.trim() &&
@@ -511,7 +554,7 @@ ytmNavObserver.observe(document.body, { childList: true, subtree: true });
 
 // Catch missed navigation/mount events without re-running completed AI requests.
 setInterval(() => {
-    checkYTMNavigation();
+    checkYTMNavigation(true);
     reconcileYTMLyrics();
 }, 1000);
 

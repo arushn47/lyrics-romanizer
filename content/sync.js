@@ -22,6 +22,7 @@ function startTimedSync(lines, options = {}) {
     const generation = syncGeneration;
     const expectedMediaId = options.mediaId || (typeof currentTrackInfo !== 'undefined' ? currentTrackInfo?.mediaId : '') || '';
     const expectedDuration = options.duration || (typeof currentTrackInfo !== 'undefined' ? currentTrackInfo?.duration : 0) || 0;
+    const expectedIdentity = options.playbackIdentity || (typeof currentTrackInfo !== 'undefined' ? currentTrackInfo?.playbackIdentity : '') || '';
     const timed = lines.map((line, index) => ({ time: line.time, index })).filter(line => typeof line.time === 'number' && Number.isFinite(line.time) && line.time >= 0).sort((a, b) => a.time - b.time);
     if (!timed.length) return;
     _syncRunning = true; _syncLastIndex = -2;
@@ -29,7 +30,7 @@ function startTimedSync(lines, options = {}) {
         if (generation !== syncGeneration) return;
         const clock = typeof readPlaybackClock === 'function' ? readPlaybackClock() : (getMainVideo() ? { position: getMainVideo().currentTime } : null);
         if (!clock || !Number.isFinite(clock.position)) return;
-        if ((expectedMediaId && clock.mediaId !== expectedMediaId) || (expectedDuration > 0 && Number.isFinite(clock.duration) && Math.abs(clock.duration - expectedDuration) > Math.max(2, Math.min(5, expectedDuration * 0.02)))) {
+        if ((expectedMediaId && clock.mediaId !== expectedMediaId) || (expectedIdentity && clock.playbackIdentity !== expectedIdentity) || (expectedDuration > 0 && Number.isFinite(clock.duration) && Math.abs(clock.duration - expectedDuration) > Math.max(2, Math.min(5, expectedDuration * 0.02)))) {
             if (_syncLastIndex !== -1) { _syncLastIndex = -1; setActiveLine(-1); }
             return;
         }

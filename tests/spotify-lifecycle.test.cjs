@@ -113,3 +113,28 @@ test('Spotify retries matching when a recording gains its previously missing dur
     await h.c.onSpotifySongChange(); duration = 180; await h.c.onSpotifySongChange();
     await h.c.onSpotifySongChange(); assert.equal(pipelines, 2); assert.equal(h.observers[0].disconnected, true);
 });
+
+test('Spotify late native lyrics recover a source miss once without restarting completed lyrics', async () => {
+    const h = fixture(); let native = [], pipelines = 0;
+    h.c.currentProcessedLines = null;
+    h.c.getSpotifyTrackInfo = () => ({ title: 'A', artist: 'Artist', duration: 180 });
+    h.c.getDomLyricsSpotify = () => native;
+    h.c.handleSongChange = async () => { pipelines++; };
+    await h.c.onSpotifySongChange(); native = ['Mounted lyrics'];
+    await h.c.onSpotifySongChange(); await h.c.onSpotifySongChange();
+    assert.equal(pipelines, 2);
+    h.c.currentProcessedLines = [{original: 'Mounted lyrics'}]; native = ['Another DOM refresh'];
+    await h.c.onSpotifySongChange(); assert.equal(pipelines, 2);
+});
+
+test('Spotify wrapped album link supplies a recording fingerprint without using the browsed album', () => {
+    const h = fixture();
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../content/spotify-dom.js'), 'utf8'), h.c);
+    h.nodes['[data-testid="context-item-info-title"]'] = {textContent: 'Song', querySelector: () => ({getAttribute: () => '/album/playingAlbum'}), getAttribute: () => null};
+    h.nodes['[data-testid="context-item-info-subtitles"] a'] = [{textContent: 'Singer'}, {textContent: 'Composer'}];
+    h.nodes['[data-testid="playback-duration"]'] = {textContent: '3:00'};
+    const track = h.c.getSpotifyTrackInfo();
+    assert.equal(track.title, 'Song'); assert.equal(track.mediaId, ''); assert.equal(track.album, '');
+    assert.equal(track.playbackIdentity, JSON.stringify(['Song', ['Singer', 'Composer'], '/album/playingAlbum']));
+    assert.equal(track.artist, 'Singer & Composer');
+});

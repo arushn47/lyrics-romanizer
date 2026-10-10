@@ -96,6 +96,22 @@ async function addNativeTranslationSource(selected, candidates, track, getNative
             : alternatives.length ? 'Native lyrics were found, but could not be safely aligned with this synced edition.'
             : 'No usable native-script lyrics found in the checked sources. Roman lyrics remain readable.' };
 }
+function preserveRelatedSongText(result, related, track) {
+    if (result?.synced || !related?.lines?.length || !sameSongAcrossYTMMode(related.track, track)) return result;
+    const clean = rows => cleanLyricLines(rows, track).lines.filter(row => row.type === 'lyric');
+    const previous = clean(related.lines);
+    if (!previous.length) return result;
+    // Preserve the spelling and line divisions only when the new text agrees.
+    // A different verse/edit stays separate even if its title and singer match.
+    const words = rows => normalizeRecordingText(rows.map(row => row.text).join(' '));
+    if (result?.lines?.length && words(clean(result.lines)) !== words(previous)) return result;
+    return { ...result, missing: false, provider: 'related', id: track.mediaId, synced: false, timingMode: 'unsynced',
+        lines: related.lines.map(row => ({ id: row.id, type: row.type, text: row.text, time: null })),
+        attribution: related.attribution || 'Lyrics from the other Song/Video mode',
+        relatedMediaId: related.track.mediaId,
+        searchSummary: result?.searchReports?.some(report => !['complete', 'limited'].includes(report.status))
+            ? result.searchSummary : 'Same song lyrics. No verified synced timing found for this ' + (ytmPlaybackKind(track.mode) === 'video' ? 'video' : 'audio') + ' edition.' };
+}
 async function resolveLyricSources(track, getNativeLyrics, signal, options = {}) {
     const recordingId = recordingStorageId(track);
     const importKey = 'tunescript_import_' + recordingId, choiceKey = 'lyricChoice_' + recordingId;
@@ -130,11 +146,18 @@ async function resolveLyricSources(track, getNativeLyrics, signal, options = {})
     const searchSummary = syncedSearchSummary(reports);
     if (selected) {
         const result = options.preferNativeForTranslation ? await addNativeTranslationSource(selected, candidates, track, getNativeLyrics, signal) : selected;
-        return { ...result, searchReports: reports, searchSummary: result.synced ? '' : searchSummary };
+        return preserveRelatedSongText({ ...result, searchReports: reports, searchSummary: result.synced ? '' : searchSummary }, options.relatedLyrics, track);
     }
-    if (decision.ambiguous) return { ambiguous: true, candidates: decision.preferred, choiceKey };
+    // Metadata cannot disambiguate genuinely different words/timelines. Keep
+    // the current platform's lyrics readable without a catalog-choice screen.
+    if (decision.ambiguous) {
+        const native = await getNativeLyrics({ signal });
+        if (signal?.aborted) throw new DOMException('Song changed', 'AbortError');
+        if (native?.length) return preserveRelatedSongText({ provider: 'native', id: track.mediaId || recordingId, title: track.title, artist: track.artist, duration: track.duration, lines: native.map(row => ({time:null, text:typeof row === 'string' ? row : row.text})), synced:false, timingMode:'unsynced', attribution:'Lyrics from the music platform', searchReports:reports, searchSummary:'Catalog timings disagree for this recording. Showing the music platform’s lyrics.' }, options.relatedLyrics, track);
+        return { missing:true, searchReports:reports, searchSummary:'Catalog timings disagree for this recording.' };
+    }
     const native = await getNativeLyrics({ signal });
     if (signal?.aborted) throw new DOMException('Song changed', 'AbortError');
-    if (native?.length) return { provider: 'native', id: track.mediaId || recordingId, title: track.title, artist: track.artist, album: track.album || '', year: track.year || null, duration: track.duration, lines: native.map(row => ({ time: null, text: typeof row === 'string' ? row : row.text })), synced: false, timingMode: 'unsynced', attribution: 'Lyrics from the music platform', searchReports: reports, searchSummary };
-    return { missing: true, searchReports: reports, searchSummary };
+    if (native?.length) return preserveRelatedSongText({ provider: 'native', id: track.mediaId || recordingId, title: track.title, artist: track.artist, album: track.album || '', year: track.year || null, duration: track.duration, lines: native.map(row => ({ time: null, text: typeof row === 'string' ? row : row.text })), synced: false, timingMode: 'unsynced', attribution: 'Lyrics from the music platform', searchReports: reports, searchSummary }, options.relatedLyrics, track);
+    return preserveRelatedSongText({ missing: true, searchReports: reports, searchSummary }, options.relatedLyrics, track);
 }

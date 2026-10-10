@@ -23,6 +23,8 @@ ARCHIVE = ROOT / 'build' / f'tunescript-firefox-{VERSION}.zip'
 
 
 def main():
+    if '--spotify-dom-smoke' in sys.argv:
+        raise ValueError('Spotify is deferred and excluded from this release. Use its archived Node adapter fixtures for development.')
     sensitive_catalog = '--catalog-sensitive' in sys.argv
     catalog_track = {'title': 'Sensitive', 'artist': 'KR$NA, Seedhe Maut & Hurricane', 'artists': ['KR$NA', 'Seedhe Maut', 'Hurricane'], 'album': 'Yours Truly', 'year': 2025, 'duration': 224} if sensitive_catalog else {'title': 'Yumabaibesa', 'artist': 'Sai Abhyankkar & Semv.iii', 'artists': ['Sai Abhyankkar', 'Semv.iii'], 'album': 'Dude (Original Motion Picture Soundtrack)', 'year': 2025, 'duration': 155}
     music_url = 'https://music.youtube.com/watch?v=1gcG6j_RD1k'
@@ -117,6 +119,9 @@ def main():
             messages = command('WebDriver:ExecuteScript', {'script': 'return Services.console.getMessageArray().map(m => m.message).filter(m => /tunescript|moz-extension|SyntaxError|ReferenceError/.test(m)).slice(-15);', 'args': [], 'newSandbox': True, 'sandbox': 'system'})['value']
             raise AssertionError({'popup': popup, 'console': messages})
         report = {'browser': session['capabilities']['browserVersion'], 'extensionVersion': VERSION, 'temporaryInstall': True, 'extensionActive': policy['active'], 'popup': popup, 'providerRequests': 0, 'scope': 'Fresh-profile package install and actual popup startup only; no music-platform acceptance or real AI processing.'}
+        language_labels = command('WebDriver:ExecuteScript', {'script': 'const page = window.wrappedJSObject || window; return {labels: page.formatLyricLanguages(["vi", "el", "fil", "en"]), region: page.formatLyricLanguages(["pt-BR"]), invalid: page.formatLyricLanguages(["xx", "__proto__"])};', 'args': [], 'newSandbox': True})['value']
+        assert language_labels == {'labels': 'Vietnamese + Greek + Filipino + English', 'region': 'Portuguese', 'invalid': ''}, language_labels
+        report['sourceLanguageLabels'] = {'state': 'passed', **language_labels, 'scope': 'Real Firefox language-name formatting beyond the hint registry, not model translation quality.'}
         report['grantedOrigins'] = command('WebDriver:ExecuteAsyncScript', {'script': 'const done = arguments[arguments.length - 1]; chrome.permissions.getAll(permissions => done(permissions.origins || []));', 'args': [], 'newSandbox': True})['value']
         if '--language-smoke' in sys.argv:
             detected = command('WebDriver:ExecuteAsyncScript', {'script': '''

@@ -23,11 +23,15 @@ async function loadActiveSong() {
     const badge = document.getElementById('detected-lang');
     badge.hidden = true;
     badge.textContent = '';
-    document.getElementById('currentSong').textContent = 'Open a music tab';
+    const timingLabel = document.getElementById('processingTiming');
+    timingLabel.hidden = true;
+    timingLabel.textContent = '';
+    document.getElementById('currentSong').textContent = 'Open YouTube Music';
     try {
         const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, currentWindow: true }, resolve));
         if (generation !== activeSongLoad || !tabs[0]?.id) return;
         const state = await sendToTab(tabs[0].id, { type: 'tunescript-state' });
+        if (state?.currentTrack?.platform && state.currentTrack.platform !== 'ytmusic') return;
         if (generation !== activeSongLoad || !state?.currentTrack || !state.currentCacheKey) return;
         activeSong = { tabId: tabs[0].id, cacheKey: state.currentCacheKey };
         const title = document.getElementById('currentSong');
@@ -36,12 +40,21 @@ async function loadActiveSong() {
         const language = state.detectedLang;
         badge.textContent = language && !/automatic|unconfirmed/i.test(language) ? language : '';
         badge.hidden = !badge.textContent;
+        const timingState = await new Promise(resolve => chrome.storage.local.get('aiTimingSummary', resolve));
+        if (generation !== activeSongLoad) return;
+        timingLabel.textContent = typeof formatAITiming === 'function' ? formatAITiming(state.processingTiming, timingState.aiTimingSummary) : '';
+        timingLabel.hidden = !timingLabel.textContent;
+        const timing = state.processingTiming;
+        timingLabel.title = timing && !timing.cached ? [
+            ['Lyrics lookup', timing.sourceMs], ['Song-change delay', timing.settleMs],
+            ['Request waiting', timing.queueMs], ['AI response', timing.apiMs], ['Total', timing.totalMs],
+        ].filter(([, value]) => Number.isFinite(value)).map(([label, value]) => `${label}: ${(value / 1000).toFixed(1)}s`).join(' · ') : '';
         document.getElementById('clearCurrentCache').disabled = actionBusy;
     } catch (_) { /* A non-music tab or a reloaded extension has no song receiver. */ }
 }
 // Shared storage is only a notification: always read the active tab's own state.
 chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && (changes.detectedLang || changes.currentCacheKey)) loadActiveSong();
+    if (area === 'local' && (changes.detectedLang || changes.currentCacheKey || changes.currentProcessingTiming || changes.aiTimingSummary)) loadActiveSong();
 });
 chrome.runtime.onMessage.addListener(message => {
     if (message?.type === 'tunescript-language-changed') loadActiveSong();

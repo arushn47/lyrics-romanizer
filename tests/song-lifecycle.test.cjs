@@ -38,7 +38,7 @@ function harness(overrides = {}, settings = {}) {
         location: { href: 'https://music.youtube.com/watch?v=A', hostname: 'music.youtube.com' },
         window: {},
         document: {
-            body: { addEventListener() {} },
+            body: { addEventListener() {}, classList: { add() {}, remove() {} } },
             getElementById: () => null,
             querySelector: () => null,
             querySelectorAll: () => [],
@@ -92,6 +92,39 @@ function harness(overrides = {}, settings = {}) {
 }
 
 
+
+test('processing reports measured phases without changing provider timestamps; replay consumes no new AI request', async () => {
+    let time = 1000, calls = 0, saved;
+    const h = harness({lyricTimingNow: () => time,
+        getCached: async () => saved || null,
+        fetchLRCLIB: async () => {time += 750; return {synced: true, lines: [{time: 12, text: 'meri jaan'}]};},
+        waitForRequestSettle: async delay => {assert.equal(delay, 400); time += delay;},
+        romanizeAndTranslate: async (rows, _lang, _key, _signal, _progress, _model, timing) => {
+            calls++; time += 8000; timing({apiMs: 8000, queueMs: 0});
+            return rows.map(r => ({r, t: 'my love', languages: ['hi'], complete: true}));
+        },
+        setCached: async (_key, data, _fallback, metadata) => {saved = {data, metadata};},
+    }, {geminiApiKey: 'fixture-key'});
+    await h.context.handleSongChange(track('Current'));
+    const first = h.local.filter(value => value.currentProcessingTiming).at(-1).currentProcessingTiming;
+    assert.equal(first.apiMs, 8000); assert.equal(first.sourceMs, 750);
+    assert.equal(first.settleMs, 400); assert.equal(first.totalMs, 9150);
+    assert.equal(h.renders.at(-1)[0].time, 12);
+    await h.context.handleSongChange(track('Current'));
+    const replay = h.local.filter(value => value.currentProcessingTiming).at(-1).currentProcessingTiming;
+    assert.equal(replay.cached, true); assert.equal(calls, 1);
+});
+
+test('skipping during the shorter settle delay still prevents the obsolete Gemini request', async () => {
+    const gate = deferred(); let calls = 0;
+    const h = harness({waitForRequestSettle: () => gate.promise,
+        getCached: async key => key === 'Current' ? {data: lines('Current')} : null,
+        romanizeAndTranslate: async () => {calls++; return [];},
+    }, {geminiApiKey: 'fixture-key'});
+    const old = h.context.handleSongChange(track('Old')); await flush();
+    await h.context.handleSongChange(track('Current')); gate.resolve(); await old;
+    assert.equal(calls, 0); assert.equal(h.renders.at(-1)[0].original, 'Current');
+});
 
 test('late cache hit cannot overwrite a newer song or restart its sync', async () => {
     const pending = new Map();
@@ -426,6 +459,96 @@ test('different YTM media IDs process even when title and artist are identical',
     assert.equal(h.renders.length, 2, 'duplicate notification for one media ID is ignored');
 });
 
+test('separate URL and mode notifications retain lyric continuity only for the same Song/Video pair', async () => {
+    const h = ytmHarness({ autoOpenLyrics: false });
+    load(h.context, 'shared/matching.js');
+    vm.runInContext("currentTrackInfo = {platform:'ytmusic', title:'Sensitive', artist:'KR$NA, Seedhe Maut', mode:'ATV', mediaId:'A'}; currentProcessedLines = [{id:'first', original:'Are we ready?', time:3}];", h.context);
+    const metadata = deferred(); let waits = 0; const processed = [];
+    h.context.waitForYTMTrackInfo = () => ++waits === 1 ? metadata.promise : Promise.resolve({title:'Sensitive (feat. Seedhe Maut)', artist:'KR$NA', mode:'OMV', duration:232, mediaId:'B'});
+    h.context.handleSongChange = async options => processed.push(options);
+    h.context.location.href = 'https://music.youtube.com/watch?v=B';
+    const first = h.context.onYTMSongChange();
+    await h.context.onYTMSongChange(false, true);
+    metadata.resolve({title:'Old', artist:'KR$NA', mode:'ATV'}); await first;
+    assert.equal(processed.length, 1);
+    assert.equal(processed[0].relatedLyrics.track.mediaId, 'A');
+    assert.equal(processed[0].relatedLyrics.lines[0].time, undefined);
+    h.context.waitForYTMTrackInfo = async () => ({title:'Unrelated', artist:'KR$NA', mode:'OMV', duration:232, mediaId:'C'});
+    h.context.location.href = 'https://music.youtube.com/watch?v=C';
+    await h.context.onYTMSongChange();
+    assert.equal(processed[1].relatedLyrics, null);
+});
+
+test('a Song/Video switch reuses completed Gemini text while keeping the video timeline separate', async () => {
+    let aiCalls = 0, mode = 'ATV_PREFERRED'; const saved = new Map();
+    const h = ytmHarness({ autoOpenLyrics: false, geminiApiKey: 'fixture-key', estimatedScrolling: false });
+    Object.assign(h.context, { TextEncoder, crypto: require('node:crypto').webcrypto,
+        backgroundRequest: async (_operation, payload) => payload.endpoint === 'get' && payload.params.duration === 224
+            ? {id:1, trackName:'Sensitive', artistName:'KR$NA', duration:224, syncedLyrics:'[00:03]Are we ready?\n[00:07]Go!'} : [] });
+    for (const file of ['lyrics', 'matching', 'cache', 'lrclib', 'providers']) load(h.context, 'shared/' + file + '.js');
+    h.context.chrome.storage.local.get = (_keys, done) => done({});
+    h.context.getCached = async key => saved.get(key) || null;
+    h.context.setCached = async (key, data, isFallback, metadata) => saved.set(key, {data, isFallback, metadata});
+    h.context.romanizeAndTranslate = async rows => { aiCalls++; return rows.map(r => ({r, t:'English meaning'})); };
+    h.context.waitForYTMTrackInfo = async () => ({ title:mode.startsWith('ATV') ? 'Sensitive' : 'Sensitive (feat. Seedhe Maut)', artist:'KR$NA', duration:mode.startsWith('ATV') ? 224 : 232, mode, mediaId:mode });
+    h.context.getDomLyricsYTM = async () => ['Are we ready Go'];
+    await h.context.onYTMSongChange();
+    const original = h.renders.at(-1);
+    assert.deepEqual(Array.from(original, row => row.time), [3, 7]);
+    mode = 'OMV_PREFERRED'; h.context.location.href = 'https://music.youtube.com/watch?v=B';
+    await h.context.onYTMSongChange();
+    const video = h.renders.at(-1);
+    assert.equal(aiCalls, 1, 'unchanged words reuse their completed whole-song transformation');
+    assert.deepEqual(Array.from(video, row => [row.id, row.original, row.translation]), Array.from(original, row => [row.id, row.original, row.translation]));
+    assert.ok(video.every(row => row.time === null));
+});
+
+test('YTM video metadata uses featured credits and excludes view counts from album matching', async () => {
+    const h = harness(); load(h.context, 'shared/matching.js'); load(h.context, 'content/ytmusic.js', true);
+    const nodes = {
+        '.title.ytmusic-player-bar': {textContent:'Sensitive (feat. Seedhe Maut)'},
+        '.byline.ytmusic-player-bar': {textContent:'KR$NA • 51 lakh views • 2.5 lakh likes'},
+        '.time-info.ytmusic-player-bar': {textContent:'0:08 / 3:52'},
+        'ytmusic-player': {getAttribute: () => 'OMV'},
+    };
+    h.context.document.querySelector = selector => nodes[selector] || null;
+    const info = await h.context.waitForYTMTrackInfo();
+    assert.equal(info.album, ''); assert.equal(info.duration, 232);
+    assert.deepEqual(Array.from(info.artists), ['kr na', 'seedhe maut']);
+});
+
+test('confirmed YTM metadata survives the full processing pipeline, outro and replay without provider or AI calls', async () => {
+    let searches = 0, aiCalls = 0, mode = 'ATV_PREFERRED';
+    const h = harness({
+        fetchLRCLIB: async () => { searches++; return {synced: true, lines: [{id: 'last', time: 130, text: 'மனமே'}]}; },
+        romanizeAndTranslate: async () => { aiCalls++; return [{r: 'Manamae', t: 'My heart'}]; },
+    }, {autoOpenLyrics: false, geminiApiKey: 'fixture-key'});
+    load(h.context, 'shared/matching.js'); load(h.context, 'content/ytmusic.js', true);
+    const time = {textContent: '0:00 / 2:26'};
+    const nodes = {
+        '.title.ytmusic-player-bar': {textContent: 'Maname'},
+        '.byline.ytmusic-player-bar': {textContent: 'Sarah Black • Maname • 2026'},
+        '.time-info.ytmusic-player-bar': time,
+        'ytmusic-player': {getAttribute: () => mode},
+    };
+    h.context.document.querySelector = selector => nodes[selector] || null;
+    h.context.nativeClockState = {mediaId: 'A', duration: 146, position: 0, receivedAt: Date.now(), ad: false};
+    await h.context.onYTMSongChange();
+    assert.equal(vm.runInContext('currentTrackInfo.durationVerified', h.context), true);
+    const request = vm.runInContext('currentSongRequest', h.context), rendered = h.renders.at(-1), renders = h.renders.length;
+    for (const [position, duration, playbackMode] of [[137,137,'ATV'], [146,0,'ATV'], [130,146,'ATV_PREFERRED'], [22,148,'ATV']]) {
+        mode = playbackMode;
+        h.context.nativeClockState = {mediaId: 'A', duration, position, receivedAt: Date.now(), ad: false};
+        time.textContent = `${Math.floor(position / 60)}:${String(position % 60).padStart(2,'0')} / 2:26`;
+        h.context.checkYTMNavigation(true); h.context.checkYTMNavigation(true); await flush();
+    }
+    assert.equal(searches, 1); assert.equal(aiCalls, 1);
+    assert.equal(h.renders.length, renders);
+    assert.equal(request.isCurrent(), true);
+    assert.equal(vm.runInContext('currentProcessedLines', h.context), rendered);
+    assert.deepEqual(Array.from(rendered, row => [row.id, row.time, row.romanized, row.translation]), [['last',130,'Manamae','My heart']]);
+});
+
 test('a single force-reload storage event starts exactly one YTM pipeline', async () => {
     const h = ytmHarness();
     let loads = 0;
@@ -586,4 +709,91 @@ test('an old native-script cache with missing meaning is repaired instead of tre
     await h.context.handleSongChange(track('வா'));
     assert.equal(calls, 1); assert.equal(h.renders.at(-1)[0].translation, 'Come');
     assert.equal(h.writes.at(-1).fallback, false);
+});
+
+test('partial mixed-language output retains IDs and times, reports incompleteness and replays without spending quota', async () => {
+    const cache = new Map(), statuses = []; let calls = 0;
+    const source = [
+        { id: 'catalog-intro', time: 0, text: 'Seedhe Maut' },
+        { id: 'catalog-english', time: 2, text: '(We back)' },
+        { id: 'catalog-hindi', time: 4, text: 'Pehchaan mujhe' },
+    ];
+    const h = harness({
+        fetchLRCLIB: async () => ({ synced: true, lines: source }),
+        getCached: async key => cache.get(key) || null,
+        setCached: async (key, data, fallback, metadata) => cache.set(key, { data, isFallback: fallback, metadata }),
+        showStatusBar: message => statuses.push(message),
+    }, { geminiApiKey: 'test-key' });
+    load(h.context, 'shared/gemini.js');
+    h.context.romanizeAndTranslate = async text => {
+        calls++;
+        return h.context.parseTransformOutput(JSON.stringify(text.map((r, i) => ({
+            id: `line-${i}`, r, t: i === 0 ? '' : i === 1 ? r : 'Recognize me', languages: i === 1 ? ['en'] : ['hi'],
+        }))), text, true);
+    };
+    await h.context.handleSongChange(track('Mixed'));
+    const first = h.renders.at(-1);
+    assert.deepEqual(Array.from(first, row => row.id), source.map(row => row.id));
+    assert.deepEqual(Array.from(first, row => row.time), [0, 2, 4]);
+    assert.equal(first[2].translation, 'Recognize me');
+    assert.equal(cache.get('Mixed').metadata.complete, false);
+    assert.equal(cache.get('Mixed').metadata.partial, true);
+    assert.equal(cache.get('Mixed').isFallback, false, 'This is saved partial AI output, not source-only fallback');
+    assert.match(statuses.at(-1), /missing for 1 line/);
+    await h.context.handleSongChange(track('Mixed'));
+    assert.equal(calls, 1);
+    assert.equal(h.renders.at(-1)[2].translation, 'Recognize me');
+    assert.match(statuses.at(-1), /missing for 1 line/);
+});
+
+test('a failed translation keeps independently saved synced lyrics through rerun and provider outages', async () => {
+    const cache = new Map(); let searches = 0, calls = 0;
+    const source = [{ id: 'catalog-42', time: 12.5, text: 'Pehchaan mujhe' }];
+    const h = harness({
+        lyricSourceCacheKey: song => `source-${song.mediaId}-${song.mode}-${song.duration}`,
+        getCached: async (key, allowFallback) => {
+            const hit = cache.get(key); return hit?.isFallback && !allowFallback ? null : hit || null;
+        },
+        setCached: async (key, data, fallback, metadata) => cache.set(key, { data, isFallback: fallback, metadata }),
+        fetchLRCLIB: async () => {
+            searches++;
+            return searches === 1 ? { synced: true, lines: source, attribution: 'Lyrics from LRCLIB', id: 42 }
+                : { synced: false, lines: [{ time: null, text: 'Different native fallback' }] };
+        },
+        romanizeAndTranslate: async text => {
+            calls++;
+            if (calls === 1) throw Object.assign(new Error('Bad JSON'), { code: 'output' });
+            return text.map(r => ({ r, t: 'Recognize me' }));
+        },
+    }, { geminiApiKey: 'test-key' });
+    load(h.context, 'shared/lyrics.js');
+    const song = track('Song', { mediaId: 'A', mode: 'Song' });
+    await h.context.handleSongChange(song);
+    assert.equal(cache.get('Song').isFallback, true);
+    assert.equal(cache.get('source-A-Song-180').data[0].time, 12.5);
+    cache.delete('Song'); // Same action as reprocessing the translation.
+    await h.context.handleSongChange(song);
+    assert.equal(searches, 1, 'A retranslation must not re-search or downgrade verified timing');
+    assert.equal(h.renders.at(-1)[0].time, 12.5);
+    assert.equal(h.renders.at(-1)[0].translation, 'Recognize me');
+    assert.equal(h.renders.at(-1)[0].id, 'catalog-42');
+    cache.delete('Song');
+    await h.context.handleSongChange(track('Song', { mediaId: 'B', mode: 'Video', duration: 188 }));
+    assert.equal(searches, 2, 'Another recording must resolve its own timing');
+    assert.equal(h.renders.at(-1)[0].original, 'Different native fallback');
+    assert.equal(h.renders.at(-1)[0].time, null);
+});
+
+test('legacy source-only fallback timing survives translation repair even without the new source cache', async () => {
+    let searches = 0;
+    const h = harness({
+        getCached: async () => ({ isFallback: true, data: [{ id: 'lrclib-9', time: 10, original: 'meri jaan', romanized: 'meri jaan', translation: '' }],
+            metadata: { timingMode: 'synced', engine: 'source', provider: 'lrclib', providerId: 9 } }),
+        fetchLRCLIB: async () => { searches++; return { missing: true }; },
+    }, { geminiApiKey: 'key' });
+    await h.context.handleSongChange(track('Song'));
+    assert.equal(searches, 0);
+    assert.equal(h.renders.at(-1)[0].time, 10);
+    assert.equal(h.renders.at(-1)[0].id, 'lrclib-9');
+    assert.equal(h.writes.at(-1).metadata.timingMode, 'synced');
 });

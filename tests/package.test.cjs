@@ -18,6 +18,8 @@ test('Firefox archive is reproducible, complete, and starts its actual backgroun
     assert.ok(manifest.background.scripts.includes('background/request-service.js'));
     assert.equal(manifest.background.service_worker, undefined);
     assert.ok(manifest.host_permissions.every(origin => origin.startsWith('https://')));
+    assert.ok(!manifest.host_permissions.some(origin => origin.includes('spotify')));
+    assert.ok(!files['content/spotify.js']); assert.ok(!files['content/spotify-dom.js']);
     assert.equal(manifest.optional_host_permissions, undefined);
     assert.ok(!Object.keys(files).some(file => /indictrans2|transliterate|translate-fallback/.test(file)));
     assert.ok(manifest.permissions.includes('activeTab'));

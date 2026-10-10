@@ -46,8 +46,10 @@ function runtime(popup = false) {
 }
 const load = (c, file) => vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), c, { filename: file });
 
-test('actual manifest content scripts bootstrap together in declared order on both platforms', () => {
+test('actual manifest activates only YouTube Music and bootstraps scripts in declared order', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+    assert.ok(!manifest.host_permissions.some(origin => origin.includes('spotify')));
+    assert.ok(manifest.content_scripts.every(group => group.matches.every(origin => origin === 'https://music.youtube.com/*')));
     for (const group of manifest.content_scripts) {
         const h = runtime(); h.c.location.hostname = group.matches[0].includes('spotify') ? 'open.spotify.com' : 'music.youtube.com';
         for (const file of group.js) load(h.c, file);
@@ -102,6 +104,10 @@ test('popup disables song action when the active tab has no music receiver', asy
     await h.c.loadActiveSong();
     assert.equal(h.nodes.clearCurrentCache.disabled, true);
     assert.equal(vm.runInContext('activeSong', h.c), null);
+    h.c.chrome.tabs.sendMessage = (_id, _message, done) => done({ currentTrack: { platform:'spotify', title:'Deferred Song' }, currentCacheKey:'old-spotify' });
+    await h.c.loadActiveSong();
+    assert.equal(h.nodes.clearCurrentCache.disabled, true);
+    assert.equal(h.nodes.currentSong.textContent, 'Open YouTube Music');
 });
 
 test('popup shows actual single or mixed languages and updates from its active tab', async () => {
@@ -131,6 +137,21 @@ test('late popup state cannot restore the previous song or its language', async 
     replies[0]({ currentTrack: { title: 'Old' }, currentCacheKey: 'old', detectedLang: 'Hindi + English' }); await old;
     assert.equal(h.nodes.currentSong.textContent, 'Current');
     assert.equal(h.nodes['detected-lang'].textContent, 'Tamil');
+});
+
+test('popup timing belongs to the active tab; cached results show no new request', async () => {
+    const h = await popupRuntime();
+    assert.equal(h.nodes.processingTiming.hidden, true);
+    h.local.aiTimingSummary = {samples: 2, averageLines: 50, averageApiMs: 12000};
+    let cached = false;
+    h.c.chrome.tabs.sendMessage = (_id, _message, done) => done({currentTrack: {title: 'Current'}, currentCacheKey: 'cache-A',
+        processingTiming: {lineCount: 45, apiMs: 8500, queueMs: 100, sourceMs: 1500, totalMs: 10500, cached}});
+    await h.c.loadActiveSong();
+    assert.equal(h.nodes.processingTiming.textContent, '45 lines · AI 8.5s\nAverage: 50 lines · 12.0s (2 requests)');
+    assert.match(h.nodes.processingTiming.title, /AI response: 8.5s/);
+    cached = true;
+    await h.c.loadActiveSong();
+    assert.match(h.nodes.processingTiming.textContent, /^Saved result · no AI request/);
 });
 
 test('song rerun removes its cache and forces the correct platform only while its session owns the song', async () => {

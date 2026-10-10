@@ -21,6 +21,7 @@ class TuneRequestService {
         this.nextFlashLiteRequestAt = 0;
         this.lyricClient = 'TuneScript v' + (/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(clientVersion) ? clientVersion : 'development') + ' (https://github.com/arushn47/lyrics-romanizer)';
         this.diagnosticWrites = Promise.resolve();
+        this.timingWrites = Promise.resolve();
         this.ready = this.storage.get('requestCooldowns').then(value => { this.cooldowns = value.requestCooldowns || {}; });
     }
     async slot(signal, lyrics = false) {
@@ -119,6 +120,7 @@ class TuneRequestService {
                 url = 'https://lrclib.net/api/' + p.endpoint + '?' + new URLSearchParams(p.params);
             }
             lyricAttempted = lyrics;
+            const sentAt = this.now();
             const response = await this.fetch(url, { ...options, signal: controller.signal, redirect: 'error', credentials: 'omit' });
             if (!response.ok) {
                 let body = ''; try { body = await response.text(); } catch { /* status is sufficient */ }
@@ -127,6 +129,13 @@ class TuneRequestService {
                 throw error;
             }
             const data = await response.json();
+            if (ai && typeof sanitizeAITiming === 'function') {
+                data.tunescriptTiming = sanitizeAITiming({ lineCount: p.lineCount, queueMs: sentAt - startedAt,
+                    apiMs: this.now() - sentAt, requestMs: this.now() - startedAt,
+                    inputTokens: data.usageMetadata?.promptTokenCount, outputTokens: data.usageMetadata?.candidatesTokenCount,
+                    thoughtTokens: data.usageMetadata?.thoughtsTokenCount });
+                if (data.candidates?.[0]?.finishReason === 'STOP') await this.saveAITiming(data.tunescriptTiming);
+            }
             if (operation.startsWith('gemini')) await this.storage.set({ engineStatus: { state: operation === 'gemini-check' ? 'key-valid' : 'working', ts: this.now() } });
             return data;
         } catch (error) {
@@ -149,6 +158,15 @@ class TuneRequestService {
             await this.storage.set({ requestCooldowns: this.cooldowns });
         }
         if (operation.startsWith('gemini')) await this.storage.set({ engineStatus: { state: error.code, retryAt: error.retryAt || null, ts: this.now() } });
+    }
+    saveAITiming(timing) {
+        this.timingWrites = this.timingWrites.then(async () => {
+            if (!timing.lineCount) return;
+            const state = await this.storage.get('aiTimingSamples');
+            const rows = [...(Array.isArray(state.aiTimingSamples) ? state.aiTimingSamples : []), timing].slice(-30).map(sanitizeAITiming);
+            await this.storage.set({ aiTimingSamples: rows, aiTimingSummary: summarizeAITimings(rows) });
+        }).catch(() => {});
+        return this.timingWrites;
     }
     record(event) {
         if (typeof sanitizeDiagnostic !== 'function' || !event || typeof event !== 'object') return Promise.resolve();

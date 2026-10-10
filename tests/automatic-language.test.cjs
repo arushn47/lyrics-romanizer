@@ -33,16 +33,25 @@ test('automatic classification distinguishes shared scripts and Latin languages 
     assert.equal(await h.c.detectLyricLanguage('नमस्ते दुनिया'), 'hi');
 });
 
-test('unreliable, close, out-of-scope and script-inconsistent classifications do not invent a language', async () => {
+test('unreliable, close, invalid and script-inconsistent classifications do not invent a language', async () => {
     for (const result of [
         { isReliable: false, languages: [{ language: 'hi', percentage: 99 }] },
         { isReliable: true, languages: [{ language: 'hi', percentage: 55 }, { language: 'mr', percentage: 45 }] },
-        { isReliable: true, languages: [{ language: 'ne', percentage: 99 }] },
+        { isReliable: true, languages: [{ language: 'xx', percentage: 99 }] },
         { isReliable: true, languages: [{ language: 'es', percentage: 99 }] },
         { isReliable: true, languages: [{ language: 'hi', percentage: NaN }] },
     ]) assert.equal(await fixture(async () => result).c.detectLyricLanguage('नमस्ते दुनिया'), null);
     assert.equal(await fixture(async () => ({ isReliable: true, languages: [{ language: 'ta', percentage: 99 }] })).c.detectLyricLanguage('en uyire'), null);
     assert.equal(await fixture().c.detectLyricLanguage('a few words'), null);
+});
+
+test('reliable language hints work beyond the old launch set and script registry', async () => {
+    for (const [text, code] of [['नमस्ते संसार', 'ne'], ['Tôi yêu âm nhạc', 'vi'], ['αγαπώ τη μουσική', 'el'], ['Mahal kita', 'fil']]) {
+        const h = fixture(async () => ({ isReliable: true, languages: [{ language: code, percentage: 95 }] }));
+        assert.equal(await h.c.detectLyricLanguage(text), code);
+    }
+    const h = fixture(async () => ({ isReliable: true, languages: [{ language: 'el', percentage: 99 }] }));
+    assert.equal(await h.c.detectLyricLanguage('plain English text'), null);
 });
 
 test('a pending classifier cannot apply its answer after the song changes', async () => {

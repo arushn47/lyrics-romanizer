@@ -62,4 +62,9 @@ button:disabled { opacity: .45; cursor: default; }
 .mz-action-secondary:hover:not(:disabled) { background: #23232e; color: #f6f5f8; }
 #actionStatus { min-height: 15px; text-align: center; color: var(--muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 #actionStatus:empty { display: none; }
+.mz-github-link { display: block; width: fit-content; max-width: 100%; margin: 6px auto 0; color: var(--muted); font-size: 11px; text-align: center; text-decoration: none; }
+.mz-github-link:hover { color: var(--gold); text-decoration: underline; }
+.mz-github-link:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; border-radius: 2px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }
+[hidden] { display: none !important; }
+.mz-processing-timing { margin: 6px 0 0; white-space: pre-line; color: #aab3c8; font-size: 11px; line-height: 1.5; }

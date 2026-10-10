@@ -1,9 +1,7 @@
 // content/spotify.js
 // Spotify Web Player DOM watcher + panel injector.
 // Polls every 1s for track identity changes (title + artist).
-// Also sets up MutationObserver-based sync mirroring aria-current.
-//
-// Current selectors still require live, signed-in validation; fixtures cover lifecycle behavior.
+// Handles the current full Now Playing view and older lyrics shelves.
 //
 // Depends on (loaded before this via manifest):
 //   content/main.js  → handleSongChange, getSettings
@@ -19,10 +17,12 @@ const SPOTIFY_SELECTORS = {
 
 let lastSpotifyTrackKey = null;
 let spotifySyncObserver = null;
+let spotifyPreparing = false;
+let spotifyNativeSnapshot = '';
 
 /**
  * Read track info from the Spotify Now Playing bar.
- * Duration is pulled from the <audio> element (most reliable source).
+ * Uses the track-relative player clock, even without an accessible audio tag.
  *
  * @returns {{title:string, artist:string, duration:number}|null}
  */
@@ -32,10 +32,13 @@ function getSpotifyTrackInfo() {
     const artist = artists.join(' & ') || document.querySelector(SPOTIFY_SELECTORS.artist)?.textContent?.trim();
     const audio = document.querySelector('audio');
     const durationText = document.querySelector('[data-testid="playback-duration"]')?.textContent;
-    const duration = typeof parsePlaybackTime === 'function' ? parsePlaybackTime(durationText) || audio?.duration || 0 : audio?.duration || 0;
-    const href = document.querySelector(SPOTIFY_SELECTORS.title)?.getAttribute('href') || '';
+    const progress = typeof getSpotifyProgressState === 'function' ? getSpotifyProgressState() : null;
+    const duration = progress?.duration || (typeof parsePlaybackTime === 'function' ? parsePlaybackTime(durationText) || audio?.duration || 0 : audio?.duration || 0);
+    const titleElement = document.querySelector(SPOTIFY_SELECTORS.title);
+    const href = (titleElement?.querySelector?.('a[href]') || titleElement)?.getAttribute('href') || '';
     const mediaId = href.match(/\/track\/([a-zA-Z0-9]+)/)?.[1] || '';
-    return title && artist ? { title, artist, artists: artists.length ? artists : [artist], duration, mediaId, album: '', year: null, mode: 'audio' } : null;
+    const playbackIdentity = typeof getSpotifyPlaybackIdentity === 'function' ? getSpotifyPlaybackIdentity() : '';
+    return title && artist ? { title, artist, artists: artists.length ? artists : [artist], duration, mediaId, playbackIdentity, album: '', year: null, mode: 'audio' } : null;
 }
 
 /**
@@ -43,6 +46,7 @@ function getSpotifyTrackInfo() {
  * @returns {string[]}
  */
 function getDomLyricsSpotify() {
+    if (typeof getSpotifyLyricRows === 'function') return getSpotifyLyricRows().map(el => el.textContent.trim());
     return Array.from(document.querySelectorAll(SPOTIFY_SELECTORS.lyricLine))
         .map(el => el.textContent.trim())
         .filter(Boolean);
@@ -63,11 +67,19 @@ async function onSpotifySongChange(force = false, retry = false) {
         return;
     }
 
-    const key = JSON.stringify([info.mediaId, info.title, info.artist, Math.round(info.duration)]);
-    if (!force && !retry && key === lastSpotifyTrackKey) return;
+    const key = JSON.stringify([info.mediaId, info.playbackIdentity, info.title, info.artist, Math.round(info.duration)]);
+    if (!force && !retry && key === lastSpotifyTrackKey) {
+        // A source miss before the listener opens Lyrics must recover when
+        // native text mounts later. One retry per distinct source snapshot;
+        // never restart a completed transformation on a DOM refresh.
+        const native = !spotifyPreparing && typeof currentProcessedLines !== 'undefined' && !currentProcessedLines ? JSON.stringify(getDomLyricsSpotify()) : '';
+        if (!native || native === '[]' || native === spotifyNativeSnapshot) return;
+    }
     lastSpotifyTrackKey = key;
 
     const request = beginSongRequest();
+    spotifyPreparing = true;
+    spotifyNativeSnapshot = JSON.stringify(getDomLyricsSpotify());
 
     // Disconnect previous observer before starting fresh pipeline
     if (spotifySyncObserver) {
@@ -102,12 +114,15 @@ async function onSpotifySongChange(force = false, retry = false) {
         lastSpotifyTrackKey = null;
         console.error('[Tunescript] Spotify song preparation failed:', error);
         showErrorPanel('Unable to load lyrics for this song. Please try again.');
+    } finally {
+        if (request.isCurrent()) spotifyPreparing = false;
     }
 }
 
 function isSpotifyLyricsVisible() {
-    const container = document.querySelector(SPOTIFY_SELECTORS.lyricsPanel);
+    const container = typeof getSpotifyLyricsContainer === 'function' ? getSpotifyLyricsContainer() : document.querySelector(SPOTIFY_SELECTORS.lyricsPanel);
     if (!container) return false;
+    if (typeof getSpotifyLyricsViewport === 'function' && getSpotifyLyricsViewport()) return true;
     const target = typeof hiddenNativeLyrics !== 'undefined' && hiddenNativeLyrics.has(container) ? container.parentElement : container;
     if (!target) return false;
     if (target.closest('[hidden], [aria-hidden="true"]')) return false;
@@ -134,10 +149,10 @@ function startSpotifySync(request = null) {
         if (request && !request.isCurrent()) return;
         if (typeof currentSourceInfo !== 'undefined' && currentSourceInfo.attribution !== 'Lyrics from the music platform') return;
         if (typeof isSyncRunning === 'function' && isSyncRunning()) return;
-        const container = document.querySelector(SPOTIFY_SELECTORS.lyricsPanel);
+        const container = typeof getSpotifyLyricsContainer === 'function' ? getSpotifyLyricsContainer() : document.querySelector(SPOTIFY_SELECTORS.lyricsPanel);
         if (!container) { lastContainer = null; lastIndex = -2; return; }
         const activeEl = container.querySelector(SPOTIFY_SELECTORS.activeLine);
-        const allLines = container.querySelectorAll(SPOTIFY_SELECTORS.lyricLine);
+        const allLines = Array.from(container.querySelectorAll(SPOTIFY_SELECTORS.lyricLine)).filter(element => element.textContent.trim());
         if (!currentProcessedLines || allLines.length !== currentProcessedLines.length || Array.from(allLines).some((element, i) => element.textContent.trim() !== currentProcessedLines[i].original.trim())) return;
         const index = activeEl ? Array.from(allLines).indexOf(activeEl) : -1;
         if (container !== lastContainer || index !== lastIndex) {

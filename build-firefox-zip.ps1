@@ -17,6 +17,10 @@ try {
     foreach ($item in @('background', 'content', 'icons', 'popup', 'shared', 'styles')) {
         Copy-Item -LiteralPath (Join-Path $sourceRoot $item) -Destination (Join-Path $staging $item) -Recurse -Force
     }
+    # Keep the deferred Spotify adapter in the repository, outside this release.
+    foreach ($file in @('spotify.js', 'spotify-dom.js')) {
+        Remove-Item -LiteralPath (Join-Path $staging ('content/' + $file)) -Force
+    }
     $manifest | Add-Member -MemberType NoteProperty -Name 'browser_specific_settings' -Value @{
         gecko = @{
             id = 'akshar@lyrics-romanizer'
@@ -27,7 +31,7 @@ try {
     $manifest.permissions = @($manifest.permissions | Where-Object { $_ -ne 'declarativeNetRequest' })
     $manifest.PSObject.Properties.Remove('declarative_net_request')
     # activeTab resolves the current song for the popup's rerun action.
-    $manifest.background = @{ scripts = @('shared/diagnostics.js', 'background/request-service.js', 'background/service-worker.js') }
+    $manifest.background = @{ scripts = @('shared/performance.js', 'shared/diagnostics.js', 'background/request-service.js', 'background/service-worker.js') }
     $manifest | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath (Join-Path $staging 'manifest.json') -Encoding utf8
     $manifestFiles = @($manifest.content_scripts | ForEach-Object { $_.js; $_.css }) + @($manifest.background.scripts) + @($manifest.action.default_popup) + @($manifest.icons.PSObject.Properties.Value)
     foreach ($file in $manifestFiles) {

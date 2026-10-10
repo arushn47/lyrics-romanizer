@@ -12,6 +12,7 @@ const ok = data => new Response(JSON.stringify(data), { headers: { 'Content-Type
 function service(fetcher, data = {}, runtime = {}) {
     const context = vm.createContext({ AbortController, DOMException, URL, URLSearchParams, TextEncoder, TextDecoder, setTimeout, clearTimeout, ...runtime });
     vm.runInContext(fs.readFileSync(path.join(root, 'shared/diagnostics.js'), 'utf8'), context);
+    if (runtime.measureTiming) vm.runInContext(fs.readFileSync(path.join(root, 'shared/performance.js'), 'utf8'), context);
     vm.runInContext(fs.readFileSync(path.join(root, 'background/request-service.js'), 'utf8') + '\nthis.Service = TuneRequestService;', context);
     const storage = { get: async () => structuredClone(data), set: async value => { Object.assign(data, structuredClone(value)); } };
     return { instance: new context.Service({ fetch: fetcher, storage, digest: async value => createHash('sha256').update(value).digest('hex'), ...runtime.serviceOptions }), data };
@@ -114,7 +115,8 @@ test('truncated, duplicate, missing and non-string AI entries are rejected', () 
 
 test('missing native-script meaning is incomplete output while an English line may omit redundant translation', () => {
     const c = transforms();
-    assert.throws(() => c.parseTransformOutput('[{"id":"line-0","r":"vaa","t":""}]', ['வா']), { code: 'output' });
+    const incomplete = c.parseTransformOutput('[{"id":"line-0","r":"vaa","t":""}]', ['வா']);
+    assert.equal(incomplete[0].complete, false);
     const result = c.parseTransformOutput('[{"id":"line-0","r":"I love you","t":""}]', ['I love you']);
     assert.equal(result[0].r, 'I love you'); assert.equal(result[0].t, '');
 });
@@ -169,15 +171,86 @@ test('source language labels retain mixed lines and distinguish Roman Hindi from
     assert.equal(c.formatLyricLanguages(['ta']), 'Tamil');
 });
 
-test('invalid language output is rejected and uncertainty does not become English', () => {
+test('malformed optional language metadata cannot discard a valid meaning or become English', () => {
     const c = transforms();
     const entry = { id: 'line-0', r: 'meri jaan', t: 'Fixture meaning' };
-    for (const languages of [undefined, 'hi', ['Hindi'], ['xx'], [null], ['__proto__']]) {
-        assert.throws(() => c.parseTransformOutput(JSON.stringify([{ ...entry, languages }]), ['meri jaan'], true), { code: 'output' });
+    for (const languages of [undefined, ['xx'], [null], ['__proto__'], { hi: true }]) {
+        const rows = c.parseTransformOutput(JSON.stringify([{ ...entry, languages }]), ['meri jaan'], true);
+        assert.equal(rows[0].t, 'Fixture meaning');
+        assert.equal(rows[0].complete, true);
+        assert.deepEqual(Array.from(rows[0].languages), []);
+    }
+    for (const languages of ['hi', [' Hindi '], ['hi_IN', 'unknown', 'en']]) {
+        const rows = c.parseTransformOutput(JSON.stringify([{ ...entry, languages }]), ['meri jaan'], true);
+        assert.equal(rows[0].languages[0], 'hi');
     }
     const result = c.parseTransformOutput(JSON.stringify([{ ...entry, languages: [] }]), ['meri jaan'], true);
     assert.equal(c.formatLyricLanguages(c.collectLyricLanguages(result)), '');
     assert.equal(c.formatLyricLanguages(['unknown', '__proto__']), '');
+});
+
+test('one Gemini request accepts unlisted languages and restores line order without changing Roman text', async () => {
+    const calls = [], source = ['Tôi yêu âm nhạc', 'αγαπώ τη μουσική', 'Sing with me'];
+    const response = [
+        { id: 'line-2', r: source[2], t: '', languages: ['en'] },
+        { id: 'line-0', r: 'changed spelling', t: 'Contract fixture meaning', languages: ['vi-VN'] },
+        { id: 'line-1', r: 'agapo ti mousiki', t: 'Contract fixture meaning', languages: ['el'] },
+    ];
+    const c = transforms({ backgroundRequest: async (operation, input) => {
+        calls.push({ operation, input });
+        return { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(response) }] } }] };
+    } });
+    const rows = await c.romanizeAndTranslate(source, 'vi', 'test-key');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].input.body.generationConfig.responseSchema.items.properties.languages.items.enum, undefined);
+    assert.match(calls[0].input.body.contents[0].parts[0].text, /source language is Vietnamese/);
+    assert.match(calls[0].input.body.contents[0].parts[0].text, /there is no fixed language list/);
+    assert.deepEqual(Array.from(rows, row => row.id), ['line-0', 'line-1', 'line-2']);
+    assert.equal(rows[0].r, source[0]);
+    assert.equal(rows[1].r, 'agapo ti mousiki');
+    assert.equal(c.formatLyricLanguages(c.collectLyricLanguages(rows)), 'Vietnamese + Greek + English');
+});
+
+test('identified non-English Roman and code-mixed lyrics require meaning rather than accepting empty translation', () => {
+    const c = transforms();
+    for (const languages of [['vi'], ['fil', 'en']]) {
+        const rows = c.parseTransformOutput(JSON.stringify([{ id: 'line-0', r: 'Roman text', t: '', languages }]), ['Roman text'], true);
+        assert.equal(rows[0].complete, false);
+    }
+    const english = c.parseTransformOutput('[{"id":"line-0","r":"Sing with me","t":"","languages":["en"]}]', ['Sing with me'], true);
+    assert.equal(english[0].t, '');
+});
+
+test('one omitted shout-out or mixed lyric meaning preserves all other translations without another request', async () => {
+    const source = ['Seedhe Maut', '$ Sign One Time', 'Pehchaan mujhe', '(We back)', '(Jab Puchhre Kaun Hai Best?)'];
+    const response = source.map((text, i) => ({ id: `line-${i}`, r: 'changed source',
+        t: i === 0 || i === 4 ? '' : i === 2 ? 'Recognize me' : text,
+        languages: i === 0 || i === 2 || i === 4 ? ['hi'] : ['en'] }));
+    let calls = 0;
+    const c = transforms({ backgroundRequest: async () => {
+        calls++;
+        return { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: JSON.stringify(response.reverse()) }] } }] };
+    } });
+    const rows = await c.romanizeAndTranslate(source, 'unknown', 'test-key');
+    assert.equal(calls, 1);
+    assert.deepEqual(Array.from(rows, row => row.r), source);
+    assert.equal(rows[2].t, 'Recognize me');
+    assert.equal(rows[0].complete, false); assert.equal(rows[4].complete, false);
+    assert.equal(rows[1].complete, true); assert.equal(rows[3].complete, true);
+    assert.match(c.lyricTransformPrompt(source), /artist shout-outs/);
+    assert.match(c.lyricTransformPrompt(source), /copy the source text into t/);
+});
+
+test('an empty Roman pronunciation is recovered from the provider and unknown empty meanings stay incomplete', () => {
+    const c = transforms();
+    const rows = c.parseTransformOutput(JSON.stringify([
+        { id: 'line-0', r: '', t: 'Recognize me', languages: ['hi'] },
+        { id: 'line-1', r: '', t: '', languages: ['unknown'] },
+        { id: 'line-2', r: '', t: 'Come', languages: ['ta'] },
+    ]), ['Pehchaan mujhe', 'meri jaan', 'வா'], true);
+    assert.equal(rows[0].r, 'Pehchaan mujhe'); assert.equal(rows[0].complete, true);
+    assert.equal(rows[1].complete, false);
+    assert.equal(rows[2].complete, false, 'Native pronunciation must not be assumed successful');
 });
 
 test('Flash-Lite pacing cancels a skipped song before another HTTP request is sent', async () => {
@@ -250,6 +323,100 @@ test('a stalled lyric request aborts promptly and reports timeout without retryi
 });
 
 const lyricPayload = title => ({ endpoint: 'search', params: { track_name: title, artist_name: 'Artist' } });
+
+test('one shared Gemini response records one numeric sample with separate queue and API times', async () => {
+    let time = 1000, calls = 0; const gate = pending();
+    const h = service(async () => { calls++; await gate.promise; time += 12500;
+        return ok({candidates: [{finishReason: 'STOP'}], usageMetadata: {promptTokenCount: 2100, candidatesTokenCount: 1600}});
+    }, {}, {measureTiming: true, serviceOptions: {now: () => time}});
+    const input = {...payload('private words'), lineCount: 50};
+    const first = h.instance.request('gemini', input, signal());
+    const second = h.instance.request('gemini', input, signal());
+    await flush(); gate.resolve(); const data = await first; await second;
+    assert.equal(calls, 1); assert.equal(h.data.aiTimingSamples.length, 1);
+    assert.equal(data.tunescriptTiming.apiMs, 12500);
+    assert.equal(data.tunescriptTiming.queueMs, 0);
+    assert.equal(h.data.aiTimingSummary.averageLines, 50);
+    assert.equal(h.data.aiTimingSummary.averageApiMs, 12500);
+    assert.ok(!/private words|secret/.test(JSON.stringify(h.data)));
+});
+
+test('timing history stays bounded and truncated responses do not count as completed requests', async () => {
+    const h = service(async () => ok({candidates: [{finishReason: 'MAX_TOKENS'}]}), {}, {measureTiming: true});
+    await h.instance.request('gemini', {...payload('one'), lineCount: 10}, signal());
+    assert.equal(h.data.aiTimingSamples, undefined);
+    h.data.aiTimingSamples = Array.from({length: 40}, () => ({lineCount: 30, apiMs: 1000, title: 'private'}));
+    await h.instance.saveAITiming({lineCount: 60, apiMs: 2000});
+    assert.equal(h.data.aiTimingSamples.length, 30);
+    assert.equal(h.data.aiTimingSummary.samples, 30);
+    assert.ok(!JSON.stringify(h.data.aiTimingSamples).includes('private'));
+});
+
+test('waiting behind another tab is measured separately from the next API response', async () => {
+    let time = 1000, calls = 0; const gate = pending();
+    const h = service(async () => {
+        if (++calls === 1) {await gate.promise; time += 8000;} else time += 2500;
+        return ok({candidates: [{finishReason: 'STOP'}]});
+    }, {}, {measureTiming: true, serviceOptions: {now: () => time}});
+    const first = h.instance.request('gemini', {...payload('one'), lineCount: 40}, signal());
+    const second = h.instance.request('gemini', {...payload('two'), lineCount: 60}, signal());
+    await flush(); gate.resolve(); await first;
+    const result = await second;
+    assert.equal(result.tunescriptTiming.queueMs, 8000);
+    assert.equal(result.tunescriptTiming.apiMs, 2500);
+    assert.equal(result.tunescriptTiming.requestMs, 10500);
+    assert.equal(h.data.aiTimingSummary.averageApiMs, 5250);
+});
+
+test('measurement storage failure cannot turn a valid Gemini response into a failed song', async () => {
+    const h = service(async () => ok({candidates: [{finishReason: 'STOP'}]}), {}, {measureTiming: true});
+    const store = h.instance.storage.set;
+    h.instance.storage.set = async value => {
+        if (value.aiTimingSamples) throw new Error('Measurement storage unavailable');
+        return store(value);
+    };
+    const result = await h.instance.request('gemini', {...payload('one'), lineCount: 30}, signal());
+    assert.equal(result.candidates[0].finishReason, 'STOP');
+    assert.ok(result.tunescriptTiming.apiMs >= 0);
+});
+
+test('Roman script requests omit echoed pronunciation but translate mixed-language words and restore original IDs', async () => {
+    let submitted, measurement;
+    const source = ['Come with me, yaar', '(We back)', 'meri jaan'];
+    const c = transforms({backgroundRequest: async (_operation, input) => {
+        submitted = input;
+        return {tunescriptTiming: {apiMs: 1200, queueMs: 500}, candidates: [{finishReason: 'STOP', content: {parts: [
+            {thought: true, text: 'internal reasoning'},
+            {text: JSON.stringify([{id: 'line-2', t: 'my love', languages: ['hi']},
+                {id: 'line-0', t: 'Come with me, friend', languages: ['en', 'hi']},
+                {id: 'line-1', t: '(We back)', languages: ['en']}])}
+        ]}}]};
+    }});
+    const result = await c.romanizeAndTranslate(source, 'hi', 'fixture', null, null, 'gemini-3.5-flash-lite', value => {measurement = value;});
+    assert.deepEqual(Array.from(result, row => row.r), source);
+    assert.deepEqual(Array.from(result, row => row.t), ['Come with me, friend', '(We back)', 'my love']);
+    assert.deepEqual(Array.from(submitted.body.generationConfig.responseSchema.items.required), ['id', 't', 'languages']);
+    assert.equal(submitted.body.generationConfig.responseSchema.items.properties.r, undefined);
+    assert.equal(submitted.lineCount, 3); assert.equal(measurement.apiMs, 1200);
+    assert.equal(measurement.queueMs, 500); assert.equal(measurement.lineCount, 3);
+    assert.ok(measurement.parseMs >= 0 && measurement.roundTripMs >= 0);
+    assert.ok(submitted.body.contents[0].parts[0].text.includes(JSON.stringify(source[1])));
+    assert.equal(submitted.body.generationConfig.thinkingConfig.thinkingLevel, 'minimal');
+});
+
+test('native pronunciation stays required and cannot silently succeed when omitted', async () => {
+    let submitted;
+    const c = transforms({backgroundRequest: async (_operation, input) => {
+        submitted = input;
+        return {candidates: [{finishReason: 'STOP', content: {parts: [{text: JSON.stringify([
+            {id: 'line-0', t: 'Hello', languages: ['ta']}, {id: 'line-1', t: 'Hello', languages: ['en']}
+        ])}]}}]};
+    }});
+    const result = await c.romanizeAndTranslate(['வணக்கம்', 'Hello'], 'ta', 'fixture');
+    assert.ok(submitted.body.generationConfig.responseSchema.items.required.includes('r'));
+    assert.equal(result[0].complete, false); assert.equal(result[1].complete, true);
+    assert.equal(result[1].r, 'Hello');
+});
 
 test('LRCLIB sends a browser-compatible client identifier with package version and project link', async () => {
     let request;

@@ -100,6 +100,35 @@ ytmusic-player-page.tunescript-lyrics-visible #side-panel ytmusic-tab-renderer {
     display: none;
 }
 
+/* Spotify's Now Playing view owns the scroll viewport and provider credits. */
+#tunescript-panel[data-platform="spotify"] {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    overflow: visible;
+}
+
+/* Independent viewport: Spotify's native page scroll never moves this panel. */
+#tunescript-panel[data-spotify-viewport="true"] {
+    position: fixed;
+    z-index: 1000;
+    max-height: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    overflow-anchor: none;
+    background: #121212;
+    padding: 24px clamp(24px, 8vw, 120px) 80px;
+}
+
+/* Leave native rows measurable for Spotify's player, but never paint a
+   second lyric layer outside our viewport (including retained next pages). */
+body.tunescript-spotify-lyrics-open [data-testid="lyrics-line"],
+body.tunescript-spotify-lyrics-open [data-testid="lyrics-line"] * {
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    LYRIC LINES
    ════════════════════════════════════════════════════════════════════════════ */

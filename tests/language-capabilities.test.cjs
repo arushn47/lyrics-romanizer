@@ -17,9 +17,9 @@ const samples = {
     pa: 'ਤੂੰ ਮੇਰਾ', bn: 'তুমি আমার', mr: 'तू माझा', gu: 'તું મારું', ur: 'تم میری جان',
 };
 
-test('all ten launch languages use the Gemini contextual route without local model capabilities', () => {
+test('registered script hints all use Gemini without launch or recognition-only restrictions', () => {
     const { c, capabilities } = fixture();
-    assert.equal(Object.values(capabilities).filter(value => value.stage === 'launch').length, 10);
+    assert.ok(Object.values(capabilities).every(value => value.stage === 'gemini' && value.contextualProcessing));
     for (const [code, text] of Object.entries(samples)) {
         assert.equal(capabilities[code].contextualProcessing, true);
         assert.equal(capabilities[code].indicTrans2, undefined);
@@ -40,11 +40,25 @@ test('Latin code-switching and shared Han script remain unconfirmed instead of a
 
 
 
-test('international choices stay experimental and existing Roman and English text survives model spelling changes', () => {
+test('international and previously recognition-only languages use Gemini and preserve original Roman spelling', () => {
     const { c, capabilities } = fixture();
-    assert.equal(Object.values(capabilities).filter(value => value.stage === 'experimental').length, 9);
-    assert.equal(capabilities.it.stage, 'recognition-only'); assert.equal(capabilities.as.contextualProcessing, false);
+    assert.equal(capabilities.it.stage, 'gemini'); assert.equal(capabilities.as.contextualProcessing, true);
     const input = ['en uyire', 'I love you', 'mi corazón'];
     const result = c.parseTransformOutput(JSON.stringify(input.map((_, i) => ({ id: `line-${i}`, r: 'changed by model', t: i === 1 ? '' : 'Meaning' }))), input);
     assert.deepEqual(Array.from(result, line => line.r), input); assert.equal(result[1].t, '');
+});
+
+test('language labels outside the script registry normalize region tags without a fixed allowlist', () => {
+    const { c, capabilities } = fixture();
+    assert.equal(capabilities.vi, undefined); assert.equal(capabilities.el, undefined);
+    assert.equal(c.formatLyricLanguages(['vi', 'el', 'fil', 'en', 'pt-BR', 'pt']), 'Vietnamese + Greek + Filipino + English + Portuguese');
+    assert.deepEqual(Array.from(c.validLyricLanguages(['VI', 'vi', 'el-GR', 'fil-PH'])), ['vi', 'el', 'fil']);
+    for (const code of ['xx', 'und', 'mul', 'zxx', 'Vietnamese', '__proto__', 'en<script>', null, 42]) assert.equal(c.normalizeLyricLanguage(code), null);
+});
+
+test('unregistered scripts still contribute to mixed-script evidence', () => {
+    const { c } = fixture();
+    const details = c.detectLanguageDetails('αγάπη αγάπη என்');
+    assert.ok(details.scripts.includes('other'));
+    assert.equal(details.language, null, 'Greek words must not disappear and leave a false Tamil-only hint');
 });

@@ -5,9 +5,14 @@ function detectLanguageDetails(text) {
         if (!/[\p{L}\p{M}]/u.test(character)) continue;
         if (/\p{Script=Latin}/u.test(character)) { counts.latin = (counts.latin || 0) + 1; continue; }
         const point = character.codePointAt(0);
+        let recognized = false;
         for (const [script, ranges] of Object.entries(SCRIPT_DEFINITIONS)) {
-            if (ranges.some(([lo, hi]) => point >= lo && point <= hi)) counts[script] = (counts[script] || 0) + 1;
+            if (ranges.some(([lo, hi]) => point >= lo && point <= hi)) {
+                counts[script] = (counts[script] || 0) + 1;
+                recognized = true;
+            }
         }
+        if (!recognized && /\p{L}/u.test(character)) counts.other = (counts.other || 0) + 1;
     }
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
     if (!sorted.length) return { language: null, candidates: [], scripts: [], reason: 'No recognized language script' };

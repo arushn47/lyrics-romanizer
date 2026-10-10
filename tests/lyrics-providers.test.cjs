@@ -204,6 +204,37 @@ test('Unicode names and initials compare as complete artist identities', () => {
     assert.equal(c.scoreLyricCandidate({ title: 'வா', artist: 'குமார்', duration: 167 }, candidate({ title: 'வா', artist: 'குமார்', duration: 167 })).accepted, true);
 });
 
+test('featured-title decorations match the base song without weakening edition or duration checks', () => {
+    const c = fixture();
+    const video = { title: 'Sensitive (feat. Seedhe Maut)', artist: 'KR$NA', duration: 232, platform: 'ytmusic', mode: 'OMV' };
+    const record = candidate({ title: 'Sensitive', artist: 'KR$NA, Seedhe Maut & Hurricane', duration: 232 });
+    assert.equal(c.recordingTitle(video.title), 'sensitive');
+    assert.deepEqual(Array.from(c.titleFeaturedArtists(video.title)), ['seedhe maut']);
+    assert.equal(c.scoreLyricCandidate(video, record).accepted, true);
+    assert.equal(c.scoreLyricCandidate(video, { ...record, duration: 224 }).accepted, false);
+    assert.equal(c.scoreLyricCandidate(video, { ...record, title: 'Sensitive (Remix)' }).accepted, false);
+    assert.equal(c.lrclibSearchPlan(video)[0].track_name, 'sensitive');
+});
+
+test('Song/Video continuity preserves matching words and IDs but never carries album timestamps', async () => {
+    const c = fixture({ backgroundRequest: async () => [] });
+    const audio = { title: 'Sensitive', artist: 'KR$NA, Seedhe Maut & Hurricane', duration: 224, platform: 'ytmusic', mode: 'ATV_PREFERRED', mediaId: 'audio' };
+    const video = { ...audio, title: 'Sensitive (feat. Seedhe Maut)', artist: 'KR$NA', duration: 232, mode: 'OMV_PREFERRED', mediaId: 'video' };
+    const relatedLyrics = { track: audio, attribution: 'Lyrics from LRCLIB', lines: [{ id: 'a', text: 'Are we ready?', time: 3 }, { id: 'b', text: 'The show!', time: 5 }] };
+    const result = await c.resolveLyricSources(video, async () => ['Are we ready the show'], null, { relatedLyrics });
+    assert.equal(result.provider, 'related'); assert.equal(result.synced, false);
+    assert.deepEqual(Array.from(result.lines, row => [row.id, row.text, row.time]), [['a', 'Are we ready?', null], ['b', 'The show!', null]]);
+    assert.match(result.searchSummary, /video edition/);
+    const nativeChanged = await c.resolveLyricSources(video, async () => ['A different verse'], null, { relatedLyrics });
+    assert.equal(nativeChanged.provider, 'native'); assert.equal(nativeChanged.lines[0].text, 'A different verse');
+    for (const other of [{ ...video, title: 'Another Song' }, { ...video, artist: 'Other Artist' }, { ...video, mode: 'ATV' }, { ...video, title: 'Sensitive (Remix)' }]) {
+        assert.equal(c.sameSongAcrossYTMMode(audio, other), false);
+        assert.equal(c.preserveRelatedSongText({ missing: true }, relatedLyrics, other).missing, true);
+    }
+    const timed = candidate({ duration: 232 });
+    assert.equal(c.preserveRelatedSongText(timed, relatedLyrics, video), timed, 'a verified video timeline takes priority');
+});
+
 test('unknown year stays optional, and a reissue year cannot override wrong recording evidence', () => {
     const c = fixture();
     assert.equal(c.scoreLyricCandidate({ ...track, year: 2026 }, candidate({ year: 2025 })).accepted, true);
@@ -257,6 +288,39 @@ test('recording caches distinguish versions, media IDs, language and engines', (
     const c = fixture();
     const keys = [track, { ...track, mediaId: 'B' }, { ...track, duration: 180 }, { ...track, model: 'another-gemini-model' }, { ...track, language: 'ta' }].map(details => c.makeCacheKey('ytmusic', track.title, track.artist, details));
     assert.equal(new Set(keys).size, keys.length);
+});
+
+test('saved lyric sources keep their recording scope across model and display changes', async () => {
+    const saved = {}, c = fixture({}, saved);
+    const sourceKey = c.lyricSourceCacheKey(track);
+    assert.equal(sourceKey, c.lyricSourceCacheKey({ ...track, model: 'other', language: 'hi', engine: 'gemini', estimatedScrolling: true }));
+    assert.equal(sourceKey, c.lyricSourceCacheKey({ ...track, title: 'Delayed title decoration', artist: 'Delayed full artist credits' }), 'A known media ID binds timing despite metadata labels changing');
+    for (const variant of [{ mediaId: 'B' }, { mode: 'Video' }, { duration: track.duration + 8 }, { platform: 'spotify' }]) {
+        assert.notEqual(sourceKey, c.lyricSourceCacheKey({ ...track, ...variant }));
+    }
+    const key = c.makeCacheKey(track.platform, track.title, track.artist, track);
+    await c.setCached(sourceKey, [{ id: 'verse-1', time: 10, text: 'Meaningful source' }], false, { timingMode: 'synced' });
+    await c.setCached(key, [{ original: 'Meaningful source', translation: 'Result' }]);
+    await c.clearSongCache(key);
+    assert.equal(saved[key], undefined); assert.ok(saved[sourceKey], 'Retranslation retains the source timeline');
+    await c.clearAllCache(); assert.equal(saved[sourceKey], undefined);
+});
+
+test('cleaning a remembered lyric source is idempotent and preserves IDs after removed headings', () => {
+    const c = fixture();
+    const first = c.cleanLyricLines([{ text: '[Verse]', time: 0 }, { text: 'Lyric', time: 10 }, { text: 'Lyric', time: 20 }]).lines;
+    const replay = c.cleanLyricLines(first).lines;
+    assert.deepEqual(JSON.parse(JSON.stringify(replay)), JSON.parse(JSON.stringify(first)));
+    assert.deepEqual(Array.from(replay, row => row.id), ['source-1', 'source-2']);
+});
+
+test('partial translations are readable cache hits but expire earlier without claiming completeness', async () => {
+    const saved = {}, c = fixture({}, saved);
+    const key = c.makeCacheKey(track.platform, track.title, track.artist, track);
+    await c.setCached(key, [{ original: 'Roman lyric', translation: '' }], false, { partial: true, complete: false });
+    assert.equal((await c.getCached(key, false)).metadata.complete, false);
+    saved[key].ts -= 8 * 86400000;
+    assert.equal(await c.getCached(key, false), null);
 });
 
 test('text-cache reuse is independent of timing and differs by language/model', async () => {
@@ -336,13 +400,33 @@ test('remembering a plain edition cannot override newly available valid timing',
     assert.equal(result.id, 'timed');
 });
 
-test('ambiguity choices contain only compatible synced editions when timing is available', async () => {
+test('conflicting editions keep native lyrics readable without a catalog chooser', async () => {
     const c = fixture();
     c.results = [candidate(), candidate({ id: '2', lines: [{ time: 2, text: 'Another timed edition' }] }), candidate({ id: 'plain', synced: false, lines: [{ time: null, text: 'Plain' }] })];
     vm.runInContext('LYRIC_PROVIDERS.lrclib.search = async () => results;', c);
-    const result = await c.resolveLyricSources(track, async () => []);
-    assert.equal(result.ambiguous, true);
-    assert.deepEqual(Array.from(result.candidates, item => item.id), ['1', '2']);
+    const result = await c.resolveLyricSources(track, async () => ['Current platform lyrics']);
+    assert.equal(result.provider, 'native'); assert.equal(result.ambiguous, undefined);
+    assert.equal(result.lines[0].text, 'Current platform lyrics');
+    assert.match(result.searchSummary, /timings disagree/);
+});
+
+test('equivalent synced catalog editions ignore spacers and punctuation without asking listeners', () => {
+    const c = fixture();
+    const lyrics = Array.from({length:24}, (_, i) => ({time:i * 3, text:'Lyric ' + i}));
+    const duplicate = [{time:0,text:''}, ...lyrics.map((line,i) => ({time:line.time + 0.2,text:i === 5 ? 'Lyric lyric 5!' : line.text + '!'})), {time:80,text:'♪'}];
+    const result = c.chooseLyricCandidate(track, [candidate({lines:lyrics}), candidate({id:'2',lines:duplicate})]);
+    assert.equal(result.ambiguous, false); assert.equal(result.selected.id, '1');
+    duplicate.forEach(line => {line.time += 5;});
+    assert.equal(c.chooseLyricCandidate(track, [candidate({lines:lyrics}),candidate({id:'2',lines:duplicate})]).ambiguous, true);
+});
+
+test('precise duration and full credits distinguish a recording automatically', () => {
+    const c = fixture();
+    const exact = candidate({duration:156}), nearby = candidate({id:'2',duration:157,lines:[{time:3,text:'Different edit'}]});
+    const result = c.chooseLyricCandidate({...track,duration:156.08}, [nearby,exact]);
+    assert.equal(result.selected.id, '1'); assert.equal(result.ambiguous, false);
+    nearby.duration = 156;
+    assert.equal(c.chooseLyricCandidate({...track,duration:156.08},[exact,nearby]).ambiguous, true);
 });
 
 test('identical words with conflicting timing require a choice instead of arbitrary alignment', () => {
@@ -464,8 +548,9 @@ test('conflicting timed editions keep searching instead of automatically choosin
         return [1, 2].map(id => ({ id, trackName: 'Naal Nachna', artistName: track.artist, duration: 156, syncedLyrics: `[00:${id === 1 ? '04' : '14'}]Come dance` }));
     } });
     const result = await c.resolveLyricSources(track, async () => []);
-    assert.equal(result.ambiguous, true); assert.equal(searches, 4);
-    assert.equal(result.candidates.length, 2);
+    assert.equal(result.missing, true); assert.equal(searches, 4);
+    assert.equal(result.ambiguous, undefined);
+    assert.match(result.searchSummary, /timings disagree/);
 });
 
 test('crowded search results still reject wrong recordings and disclose the result limit', async () => {

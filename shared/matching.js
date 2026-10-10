@@ -2,7 +2,20 @@ function normalizeRecordingText(value) {
     return String(value || '').normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().replace(/\s+/g, ' ');
 }
 function recordingTitle(value) {
-    return normalizeRecordingText(String(value || '').replace(/\s*[\[(]?from\s+["“][^"”]+["”][\])]*/ig, '').replace(/\s*[\[(](?:official\s+)?(?:music\s+)?(?:video|audio|lyric(?:s)?(?:\s+video)?)[\])]/ig, ''));
+    return normalizeRecordingText(String(value || '').replace(/\s*[\[(]?from\s+["“][^"”]+["”][\])]*/ig, '').replace(/\s*[\[(](?:feat\.?|ft\.?|featuring)\s+[^\])]+[\])]/ig, '').replace(/\s*[\[(](?:official\s+)?(?:music\s+)?(?:video|audio|lyric(?:s)?(?:\s+video)?)[\])]/ig, ''));
+}
+function titleFeaturedArtists(title) {
+    return Array.from(String(title || '').matchAll(/[\[(](?:feat\.?|ft\.?|featuring)\s+([^\])]+)[\])]/ig)).flatMap(match => creditedArtists(match[1]));
+}
+function ytmPlaybackKind(mode) {
+    return /^(ATV|audio|song)(?:_PREFERRED)?$/i.test(mode || '') ? 'song' : /^(OMV|UGC|video)(?:_PREFERRED)?$/i.test(mode || '') ? 'video' : null;
+}
+function sameSongAcrossYTMMode(left, right) {
+    const leftKind = ytmPlaybackKind(left?.mode), rightKind = ytmPlaybackKind(right?.mode);
+    if (left?.platform !== 'ytmusic' || right?.platform !== 'ytmusic' || !leftKind || !rightKind || leftKind === rightKind) return false;
+    const title = recordingTitle(left.title);
+    const leadArtist = creditedArtists(left.artist)[0];
+    return !!title && title === recordingTitle(right.title) && !!leadArtist && artistIdentity(leadArtist) === artistIdentity(creditedArtists(right.artist)[0]) && recordingVersions(left.title).join('|') === recordingVersions(right.title).join('|');
 }
 function recordingVersions(value) {
     return ['live', 'remix', 'cover', 'unplugged', 'acoustic', 'instrumental', 'karaoke', 'sped up', 'slowed', 'extended', 'radio edit'].filter(label => new RegExp('\\b' + label + '\\b', 'i').test(String(value || '')));
@@ -43,8 +56,24 @@ function chooseLyricCandidate(track, candidates) {
     const best = accepted[0];
     // Equally plausible text editions or materially different timing need a
     // choice. Identical words alone cannot establish correct alignment.
-    const words = candidate => candidate.lines.map(line => normalizeRecordingText(line.text)).join('\n');
-    const sameEdition = other => best.candidate.lines.length === other.lines.length && words(best.candidate) === words(other) && (!best.candidate.synced || best.candidate.lines.every((line, i) => Math.abs(line.time - other.lines[i].time) <= 1));
-    const ambiguous = accepted.slice(1).some(other => Math.abs(best.score - other.score) < 2 && !sameEdition(other.candidate));
+    const sungRows = candidate => candidate.lines.map(line => ({...line, words: normalizeRecordingText(line.text)})).filter(line => line.words);
+    const sameEdition = other => {
+        const left = sungRows(best.candidate), right = sungRows(other);
+        if (!left.length || left.length !== right.length) return false;
+        // Catalog duplicates differ in spacer/instrumental rows, punctuation
+        // and occasional stutters. Require near-identical ordered text AND
+        // agreement at every sung timestamp, not just matching metadata.
+        const matches = left.filter((line, i) => line.words === right[i].words).length;
+        const sameWords = matches === left.length || (left.length >= 20 && matches / left.length >= 0.95);
+        return sameWords && (!best.candidate.synced || left.every((line, i) => Math.abs(line.time - right[i].time) <= 1));
+    };
+    const rivals = accepted.slice(1).filter(other => Math.abs(best.score - other.score) < 2 && !sameEdition(other.candidate));
+    const fullCredits = creditedArtists(track.artists || track.artist).map(artistIdentity);
+    const bestCredits = creditedArtists(best.candidate.artists || best.candidate.artist).map(artistIdentity);
+    // Spotify exposes fractional recording duration. A nearly exact duration
+    // and full artist match can distinguish an edition from catalog entries
+    // that merely pass the broader compatibility tolerance.
+    const exactRecording = best.durationDelta !== null && best.durationDelta < 0.5 && fullCredits.length && fullCredits.every(artist => bestCredits.includes(artist)) && rivals.every(other => other.durationDelta !== null && other.durationDelta - best.durationDelta >= 0.75);
+    const ambiguous = rivals.length > 0 && !exactRecording;
     return { selected: ambiguous ? null : best.candidate, decisions, ambiguous, preferred: accepted.map(row => row.candidate) };
 }

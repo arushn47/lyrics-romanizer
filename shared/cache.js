@@ -7,7 +7,7 @@ function storageRemove(keys) { return new Promise(resolve => chrome.storage.loca
 async function getCached(key, allowFallback = true) {
     const hit = (await storageGet(key))[key];
     if (!hit || hit.v !== CACHE_VERSION || !Array.isArray(hit.data) || !hit.data.length) return null;
-    if (Date.now() - hit.ts > (hit.isFallback ? 7 : 90) * 86400000) return null;
+    if (Date.now() - hit.ts > (hit.isFallback || hit.metadata?.partial ? 7 : 90) * 86400000) return null;
     if (hit.isFallback && !allowFallback) return null;
     return hit;
 }
@@ -22,6 +22,13 @@ async function setCached(key, data, isFallback = false, metadata = {}) {
 function makeCacheKey(platform, title, artist, details = {}) {
     const identity = [platform, details.mediaId || '', title.normalize('NFKC'), artist.normalize('NFKC'), Math.round(details.duration || 0), details.mode || '', details.engine || 'gemini', details.model || 'gemini-2.5-flash', details.language || 'auto', !!details.estimatedScrolling];
     return CACHE_PREFIX + 'recording_' + encodeURIComponent(JSON.stringify(identity));
+}
+function lyricSourceCacheKey(track) {
+    // Timing belongs to a recording, independently of API keys, model,
+    // display settings or the success of its translation.
+    return makeCacheKey(track.platform, track.mediaId ? '' : track.title, track.mediaId ? '' : track.artist, {
+        ...track, engine: 'source', model: 'source-v1', language: 'auto', estimatedScrolling: false,
+    }) + '_source';
 }
 async function transformationCacheKey(lines, language, settings) {
     const profile = [settings.geminiModel, 'phonetic-v1'];

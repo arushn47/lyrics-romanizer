@@ -40,7 +40,9 @@ function cleanLyricLines(source, track = {}) {
         const titleHeading = index < 4 && title && text.toLocaleLowerCase().includes(title) && /(?:\blyrics\b|\bde bol\b|பாடல் வரிகள்|गीत के बोल)/iu.test(text);
         if (heading || credit || titleHeading) { excluded.push({ sourceIndex: index, text: raw, type: heading ? 'section' : 'metadata', time }); return; }
         if (!text && time === null) return;
-        lines.push({ id: `source-${index}`, sourceIndex: index, time, text, type: text ? 'lyric' : 'instrumental', ...(typeof row.romanizedSource === 'string' ? { romanizedSource: row.romanizedSource } : {}) });
+        lines.push({ id: typeof row.id === 'string' && row.id ? row.id : `source-${index}`,
+            sourceIndex: Number.isInteger(row.sourceIndex) && row.sourceIndex >= 0 ? row.sourceIndex : index,
+            time, text, type: text ? 'lyric' : 'instrumental', ...(typeof row.romanizedSource === 'string' ? { romanizedSource: row.romanizedSource } : {}) });
     });
     return { lines, excluded };
 }
