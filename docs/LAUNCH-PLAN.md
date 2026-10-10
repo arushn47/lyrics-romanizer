@@ -2,8 +2,8 @@
 
 Start with desktop YouTube Music and a small listener beta. Keep the setup automatic and the popup simple. Source languages are no longer restricted to the initial Indian-language set: Gemini attempts automatic pronunciation and English meaning for languages it can process. Spotify and Apple Music remain deferred.
 
-1. [x] **GitHub installation entry point:** Add one popup link and a README guide for download/clone, Chrome/Edge local installation, temporary Firefox review, API-key setup and manual updates. Implemented locally on 10 October 2026; publishing the new guide is part of step 2.
-2. [ ] **Publish the GitHub update:** Review the accumulated YouTube Music changes, check that credentials, build outputs and private notes stay excluded, run the relevant release checks and push the reviewed source. The remote README then includes the new installation guide.
+1. [x] **GitHub installation entry point:** Add one popup link and a README guide for download/clone, Chrome/Edge local installation, temporary Firefox review, API-key setup and manual updates. Published with the version 1.3.2 GitHub update on 11 October 2026.
+2. [x] **Publish the GitHub update:** Version 1.3.2 is pushed to main. The installation guide, automatic-language support, playback fixes and processing-time measurements are included. All 226 automated checks pass; credentials, build outputs and private notes remain excluded.
 3. [ ] **Refresh the Firefox listing:** Version 1.3.2 and new summary/description copy are prepared in `docs/STORE-LISTING.md`. Finish screenshots and a signed-in playback check, then submit the update and listing changes.
 4. [ ] **Make the demo and landing page:** Show native lyrics, Roman pronunciation and English meaning in a short real playback demo. Add a free GitHub Pages page with the demo, Firefox installation, GitHub local-install instructions and three-step key setup.
 5. [ ] **Prepare Edge distribution:** Verify unpacked installation, key setup and YouTube Music playback in Edge, then prepare its free Add-ons submission.
