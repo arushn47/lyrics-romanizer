@@ -1,33 +1,20 @@
-﻿// content/detector.js
-// Zero-API language detection from Unicode code-point ranges.
-// Relies on SCRIPT_RANGES defined in shared/constants.js (loaded first via manifest).
-// Returns the ISO language code of the dominant script, or null if unsupported.
-
-console.log('[Tunescript] detector.js loaded ✓');
-
-/**
- * Detect the dominant Indic script in a block of lyrics text.
- *
- * @param {string} text - Full lyrics text joined into one string.
- * @returns {string|null} ISO code ('hi'|'ta'|'ml'|'kn'|'te') or null.
- */
-function detectLanguage(text) {
+// A script is evidence, not proof of a language. Shared scripts remain ambiguous.
+function detectLanguageDetails(text) {
     const counts = {};
-
-    for (const char of text) {
-        const cp = char.codePointAt(0);
-        for (const [lang, ranges] of Object.entries(SCRIPT_RANGES)) {
-            if (ranges.some(([lo, hi]) => cp >= lo && cp <= hi)) {
-                counts[lang] = (counts[lang] || 0) + 1;
-            }
+    for (const character of text) {
+        if (!/[\p{L}\p{M}]/u.test(character)) continue;
+        if (/\p{Script=Latin}/u.test(character)) { counts.latin = (counts.latin || 0) + 1; continue; }
+        const point = character.codePointAt(0);
+        for (const [script, ranges] of Object.entries(SCRIPT_DEFINITIONS)) {
+            if (ranges.some(([lo, hi]) => point >= lo && point <= hi)) counts[script] = (counts[script] || 0) + 1;
         }
     }
-
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    console.log('[Tunescript] detectLanguage scores:', counts);
-
-    // Require at least 5 matching chars to avoid false positives
-    const result = sorted.length > 0 && sorted[0][1] > 5 ? sorted[0][0] : null;
-    console.log('[Tunescript] detectLanguage result:', result ? LANGUAGE_NAMES[result] : 'null (not Indic)');
-    return result;
+    if (!sorted.length) return { language: null, candidates: [], scripts: [], reason: 'No recognized language script' };
+    const total = sorted.reduce((sum, [, count]) => sum + count, 0);
+    const dominant = sorted[0][0];
+    const candidates = Object.entries(LANGUAGE_CAPABILITIES).filter(([, language]) => language.detectionScripts.includes(dominant)).map(([code]) => code);
+    const mixed = sorted[0][1] / total < 0.75;
+    return { language: !mixed && candidates.length === 1 ? candidates[0] : null, candidates, scripts: sorted.map(([script]) => script), reason: mixed ? 'Mixed scripts' : candidates.length > 1 ? 'Shared script; automatic classification needed' : 'Script detected' };
 }
+function detectLanguage(text) { return detectLanguageDetails(text).language; }

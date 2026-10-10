@@ -1,10 +1,5 @@
-// shared/transliterate.js
-// Offline character-by-character transliteration for Indic scripts.
-// Used as a fallback when Gemini API is unavailable (rate-limited, no key, etc.).
-// Not as polished as AI romanization but provides readable Latin output instantly.
-
-console.log('[Tunescript] transliterate.js loaded ✓');
-
+// Deterministic script comparison for lyric-source alignment only.
+// This is not a pronunciation or translation engine.
 // ── Tamil Unicode → Latin ────────────────────────────────────────────────────
 const TAMIL = {
     // Vowels
@@ -116,10 +111,19 @@ const MALAYALAM = {
     '\u0D02': 'm', '\u0D03': 'h',
 };
 
-// Build a combined lookup for all scripts
-const ALL_MAPS = Object.assign({}, TAMIL, DEVANAGARI, TELUGU, MALAYALAM);
+// Brahmic blocks share many character positions. Keep script-specific vowels,
+// consonants and marks explicit where those positions/pronunciations differ.
+function shiftedIndicMap(offset) {
+    return Object.fromEntries(Object.entries(DEVANAGARI).filter(([character]) => character.codePointAt(0) <= 0x094D || character.codePointAt(0) >= 0x0966).map(([character, roman]) => [String.fromCodePoint(character.codePointAt(0) + offset), roman]));
+}
+const KANNADA = Object.assign(shiftedIndicMap(0x380), { 'ಎ': 'e', 'ಏ': 'ee', 'ಒ': 'o', 'ಓ': 'oo', 'ೆ': 'e', 'ೇ': 'ee', 'ೊ': 'o', 'ೋ': 'oo', 'ಳ': 'la', 'ಂ': 'm' });
+const GUJARATI = shiftedIndicMap(0x180);
+const BENGALI = Object.assign(shiftedIndicMap(0x80), { 'অ': 'o', 'এ': 'e', 'ও': 'o', 'ে': 'e', 'ো': 'o', 'য': 'ja', 'য়': 'ya', 'য়': 'ya', 'ড়': 'ra', 'ঢ়': 'rha', 'ৎ': 't', 'ং': 'ng', 'ঃ': 'h' });
+const GURMUKHI = Object.assign(shiftedIndicMap(0x100), { 'ਏ': 'e', 'ਓ': 'o', 'ੇ': 'e', 'ੋ': 'o', 'ਂ': 'n', 'ੰ': 'n', 'ਖ਼': 'kha', 'ਗ਼': 'ga', 'ਜ਼': 'za', 'ੜ': 'ra', 'ਫ਼': 'fa', 'ਸ਼': 'sha' });
+Object.assign(MALAYALAM, { 'ൺ': 'n', 'ൻ': 'n', 'ർ': 'r', 'ൽ': 'l', 'ൾ': 'l', 'ൿ': 'k' });
+const ALL_MAPS = Object.assign({}, TAMIL, DEVANAGARI, TELUGU, MALAYALAM, KANNADA, GUJARATI, BENGALI, GURMUKHI);
 
-const VIRAMAS = new Set(['\u094D', '\u0BCD', '\u0C4D', '\u0D4D']);
+const VIRAMAS = new Set(['\u094D', '\u0BCD', '\u0C4D', '\u0D4D', '\u0CCD', '\u0ACD', '\u09CD', '\u0A4D']);
 const VOWEL_SIGNS = new Set([
     // Tamil
     '\u0BBE', '\u0BBF', '\u0BC0', '\u0BC1', '\u0BC2', '\u0BC6', '\u0BC7', '\u0BC8', '\u0BCA', '\u0BCB', '\u0BCC',
@@ -129,7 +133,14 @@ const VOWEL_SIGNS = new Set([
     '\u0C3E', '\u0C3F', '\u0C40', '\u0C41', '\u0C42', '\u0C46', '\u0C47', '\u0C48', '\u0C4A', '\u0C4B', '\u0C4C',
     // Malayalam
     '\u0D3E', '\u0D3F', '\u0D40', '\u0D41', '\u0D42', '\u0D46', '\u0D47', '\u0D48', '\u0D4A', '\u0D4B', '\u0D4C',
+    ...[0x380, 0x180, 0x80, 0x100].flatMap(offset => [0x093E, 0x093F, 0x0940, 0x0941, 0x0942, 0x0943, 0x0947, 0x0948, 0x094B, 0x094C].map(code => String.fromCodePoint(code + offset))),
+    'ೆ', 'ೊ',
 ]);
+const NUKTA_PAIRS = { 'क़': 'qa', 'ख़': 'kha', 'ग़': 'gha', 'ज़': 'za', 'ड़': 'dda', 'ढ़': 'ddha', 'फ़': 'fa', 'य़': 'ya', 'ড়': 'ra', 'ঢ়': 'rha', 'য়': 'ya' };
+function localIndicConsonant(character) {
+    const code = character?.codePointAt(0);
+    return [[0x0915, 0x0939], [0x0958, 0x095F], [0x0B95, 0x0BB9], [0x0C15, 0x0C39], [0x0D15, 0x0D3A], [0x0C95, 0x0CB9], [0x0A95, 0x0AB9], [0x0995, 0x09B9], [0x09DC, 0x09DF], [0x0A15, 0x0A39], [0x0A59, 0x0A5E]].some(([start, end]) => code >= start && code <= end);
+}
 
 /**
  * Transliterate a single line of Indic text to Latin script.
@@ -139,40 +150,35 @@ const VOWEL_SIGNS = new Set([
  * @returns {string} Romanized text.
  */
 function transliterateLine(text) {
+    text = text.normalize('NFC');
     let result = '';
+    let inherentVowel = false;
     for (let i = 0; i < text.length; i++) {
         const ch = text[i];
+        const pair = text.slice(i, i + 2);
+        if (NUKTA_PAIRS[pair]) {
+            result += NUKTA_PAIRS[pair]; inherentVowel = true; i++; continue;
+        }
         if (VIRAMAS.has(ch)) {
             // Virama / pulli suppresses the inherent 'a' of preceding consonant
-            if (result.endsWith('a')) {
+            if (inherentVowel && result.endsWith('a')) {
                 result = result.slice(0, -1);
             }
         } else if (VOWEL_SIGNS.has(ch)) {
             // Combining vowel mark replaces the inherent 'a' of preceding consonant
-            if (result.endsWith('a')) {
+            if (inherentVowel && result.endsWith('a')) {
                 result = result.slice(0, -1);
             }
             result += ALL_MAPS[ch] || '';
+        } else if (ch === 'ੱ' && localIndicConsonant(text[i + 1])) {
+            result += (ALL_MAPS[text[i + 1]] || '').match(/^[^aeiou]+/)?.[0] || '';
         } else if (ALL_MAPS.hasOwnProperty(ch)) {
             result += ALL_MAPS[ch];
         } else {
             result += ch;
         }
+        inherentVowel = localIndicConsonant(ch) && (ALL_MAPS[ch] || '').endsWith('a');
     }
     // Clean up double spaces and trim
     return result.replace(/\s{2,}/g, ' ').trim();
-}
-
-/**
- * Transliterate an array of lyrics lines.
- *
- * @param {string[]} lines - Array of original text lines.
- * @returns {Array<{r: string, t: string}>} Romanized lines (no translation).
- */
-function offlineTransliterate(lines) {
-    console.log(`[Tunescript] Offline transliteration: ${lines.length} lines`);
-    return lines.map(line => ({
-        r: transliterateLine(line),
-        t: '', // No translation available offline
-    }));
 }

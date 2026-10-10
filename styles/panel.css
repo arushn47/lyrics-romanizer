@@ -2,13 +2,12 @@
    Injected into Spotify and YT Music pages.
    All classes prefixed with "tunescript-" to avoid conflicts with host page. */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
 /* ════════════════════════════════════════════════════════════════════════════
    DESIGN TOKENS
    ════════════════════════════════════════════════════════════════════════════ */
 
-:root {
+#tunescript-panel, #tunescript-resume-btn {
     --mz-bg:      #0E0E16;
     --mz-gold:    #C9A227;
     --mz-gold-bg: rgba(201, 162, 39, 0.05);
@@ -24,7 +23,7 @@
    YT MUSIC LAYOUT OVERRIDES
    ════════════════════════════════════════════════════════════════════════════ */
 
-ytmusic-player-page #side-panel.ytmusic-player-page {
+ytmusic-player-page.tunescript-lyrics-visible #side-panel.ytmusic-player-page {
     min-width: 35vw !important;
     max-width: 35vw !important;
     width: 35vw !important;
@@ -33,13 +32,13 @@ ytmusic-player-page #side-panel.ytmusic-player-page {
     box-sizing: border-box !important;
 }
 
-ytmusic-player-page #main-panel.ytmusic-player-page {
+ytmusic-player-page.tunescript-lyrics-visible #main-panel.ytmusic-player-page {
     flex: 1 1 auto !important;
     min-width: 0 !important;
 }
 
-ytmusic-player-page #side-panel #tabs-renderer,
-ytmusic-player-page #side-panel ytmusic-tab-renderer {
+ytmusic-player-page.tunescript-lyrics-visible #side-panel #tabs-renderer,
+ytmusic-player-page.tunescript-lyrics-visible #side-panel ytmusic-tab-renderer {
     padding-right: 12px !important;
 }
 
@@ -51,12 +50,29 @@ ytmusic-player-page #side-panel ytmusic-tab-renderer {
     padding-top: 4px;
 }
 
-/* Hide YTM's "Lyrics not available" message when panel is active */
-ytmusic-message-renderer,
-ytmusic-tab-renderer .empty-state,
-ytmusic-tab-renderer [class*="empty"],
-ytmusic-tab-renderer [class*="message"] {
-    display: none !important;
+/* Native empty/error messages stay visible until a replacement is mounted. */
+.tunescript-source { color: #c4c4cc; font: 13px/1.5 system-ui, sans-serif; padding: 12px 16px; }
+.tunescript-search-note { padding-top: 0; color: #b8b4a7; }
+.tunescript-match-choice { display: block; width: calc(100% - 32px); margin: 8px 16px; padding: 12px; text-align: left; color: #fff; background: #181820; border: 1px solid #c9a227; border-radius: 8px; cursor: pointer; }
+.tunescript-match-preview { display: block; margin-top: 6px; color: #c4c4cc; font: 14px/1.5 system-ui, sans-serif; overflow-wrap: anywhere; }
+.tunescript-seekable:focus-visible, .tunescript-match-choice:focus-visible { outline: 2px solid #c9a227; outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+    #tunescript-panel, #tunescript-panel *, #tunescript-resume-btn, #tunescript-resume-btn * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+.tunescript-retry-btn {
+    margin: 0 16px 16px;
+    padding: 8px 16px;
+    border: 1px solid var(--mz-gold);
+    border-radius: 8px;
+    background: var(--mz-bg);
+    color: var(--mz-w100);
+    font: inherit;
+    cursor: pointer;
+}
+
+.tunescript-retry-btn:focus-visible {
+    outline: 2px solid var(--mz-gold);
+    outline-offset: 3px;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -417,7 +433,7 @@ ytmusic-tab-renderer [class*="message"] {
 
 @media screen and (max-width: 768px) {
 
-    ytmusic-player-page #side-panel.ytmusic-player-page {
+    ytmusic-player-page.tunescript-lyrics-visible #side-panel.ytmusic-player-page {
         min-width: unset !important;
         max-width: 100% !important;
         width: 100% !important;
@@ -425,8 +441,8 @@ ytmusic-tab-renderer [class*="message"] {
         padding-right: 0 !important;
     }
 
-    ytmusic-player-page #side-panel #tabs-renderer,
-    ytmusic-player-page #side-panel ytmusic-tab-renderer {
+    ytmusic-player-page.tunescript-lyrics-visible #side-panel #tabs-renderer,
+    ytmusic-player-page.tunescript-lyrics-visible #side-panel ytmusic-tab-renderer {
         padding-right: 0 !important;
     }
 

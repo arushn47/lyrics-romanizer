@@ -1,5 +1,7 @@
 # dependencies
 node_modules/
+__pycache__/
+*.pyc
 
 # build output
 dist/
@@ -8,6 +10,11 @@ build/
 # env files
 .env
 .env.local
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.json
 
 # logs
 *.log
@@ -28,3 +35,20 @@ _metadata/
 *.zip
 akshar-firefox-staging/
 .claude/
+.codex/
+.agents/
+
+# Private working notes and one-off provider dumps
+work/
+docs/IMPLEMENTATION-PLAN.md
+tunescript-IMPLEMENTATION.md
+tunescript-PRD.md
+
+# Local model experiments and generated extension packages
+local/
+cloud/
+.venv/
+.hf/
+*.safetensors
+*.gguf
+*.xpi

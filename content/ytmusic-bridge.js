@@ -1,83 +1,33 @@
-// content/ytmusic-bridge.js
-// Runs in the MAIN execution world on music.youtube.com to access YTM's native player API.
-// Communicates with Tunescript content scripts via standard DOM custom events on window.
-
-console.log('[Tunescript Bridge] ytmusic-bridge.js loaded in MAIN world ✓');
-
+// MAIN-world bridge uses string payloads compatible with Firefox's isolated world.
 function getPlayerApi() {
-    const candidates = [
-        document.getElementById('movie_player'),
-        document.querySelector('#movie_player'),
-        document.querySelector('ytmusic-player-bar')?.playerApi_,
-        document.querySelector('ytmusic-app')?.player_,
-    ];
-    for (const c of candidates) {
-        if (c && typeof c.seekTo === 'function') return c;
-    }
-    return null;
+    const candidates = [document.getElementById('movie_player'), document.querySelector('ytmusic-player-bar')?.playerApi_, document.querySelector('ytmusic-app')?.player_];
+    return candidates.find(player => player && typeof player.seekTo === 'function') || null;
 }
-
-function setupEndedGuard() {
-    const video = document.querySelector('video');
-    if (video && !video.__tunescriptEndedGuardAttached) {
-        video.__tunescriptEndedGuardAttached = true;
-        video.addEventListener('ended', (e) => {
-            if (window.__tunescriptSeeking) {
-                e.stopImmediatePropagation();
-                e.preventDefault();
-                console.log('[Tunescript Bridge] 🛡️ Suppressed premature ended event during seek');
-            }
-        }, true); // Capture phase to intercept before YTM handles it
-    }
-}
-
-window.addEventListener('tunescript-seek', (e) => {
-    const time = e.detail?.time;
-    if (typeof time !== 'number' || isNaN(time) || time < 0) return;
-
-    setupEndedGuard();
-
-    console.log(`[Tunescript Bridge] Received seek request for ${time.toFixed(2)}s`);
-
+function readNativePlayerState() {
     const player = getPlayerApi();
-    if (player) {
-        const timeBefore = typeof player.getCurrentTime === 'function' ? player.getCurrentTime() : null;
-        
-        // Multi-strategy duration detection
-        const passedDuration = e.detail?.duration || 0;
-        let playerDur = (typeof player.getDuration === 'function' ? player.getDuration() : 0) || 0;
-        const sliderMax = parseFloat(document.querySelector('#progress-bar')?.getAttribute('aria-valuemax')) || 0;
-
-        // In gapless MSE playback, player.getDuration() can temporarily return only the
-        // length of buffered chunks (e.g. 49s into a 243s song). Use the maximum known duration
-        // so mid-song seeks are never falsely clamped.
-        const dur = Math.max(passedDuration, playerDur, sliderMax);
-
-        let targetTime = time;
-        // Clamp to avoid seeking into the auto-advance end zone (last 2 seconds of song)
-        if (dur > 0 && targetTime >= dur - 2.0) {
-            targetTime = Math.max(0, dur - 2.5);
-            console.log(`[Tunescript Bridge] Clamped seek from ${time.toFixed(2)}s to ${targetTime.toFixed(2)}s (duration: ${dur.toFixed(2)}s)`);
-        }
-
-        // Set seeking flag to suppress premature 'ended' events on <video> from buffer underruns
-        window.__tunescriptSeeking = true;
-        clearTimeout(window.__tunescriptSeekTimer);
-        window.__tunescriptSeekTimer = setTimeout(() => {
-            window.__tunescriptSeeking = false;
-        }, 800);
-
-        console.log(`[Tunescript Bridge] Calling movie_player.seekTo(${targetTime.toFixed(2)}, true) [player time before: ${timeBefore !== null ? timeBefore.toFixed(2) + 's' : 'unknown'}, duration: ${dur.toFixed(2)}s]`);
-        player.seekTo(targetTime, true);
-
-        // Verify if player position updated
-        setTimeout(() => {
-            const timeAfter = typeof player.getCurrentTime === 'function' ? player.getCurrentTime() : null;
-            console.log(`[Tunescript Bridge] Player time after seek: ${timeAfter !== null ? timeAfter.toFixed(2) + 's' : 'unknown'}`);
-        }, 150);
-        return;
-    }
-
-    console.warn('[Tunescript Bridge] ⚠️ Native player seek API (movie_player.seekTo) is not available!');
+    if (!player || typeof player.getCurrentTime !== 'function') return null;
+    const data = typeof player.getVideoData === 'function' ? player.getVideoData() : {};
+    const position = player.getCurrentTime(), duration = typeof player.getDuration === 'function' ? player.getDuration() : 0;
+    if (!Number.isFinite(position)) return null;
+    return { mediaId: data?.video_id || '', position, duration: Number.isFinite(duration) ? duration : 0, ad: document.getElementById('movie_player')?.classList.contains('ad-showing') || false };
+}
+window.addEventListener('tunescript-clock-request', () => {
+    try { const state = readNativePlayerState(); if (state) window.dispatchEvent(new CustomEvent('tunescript-clock', { detail: JSON.stringify(state) })); } catch { /* player is transitioning */ }
 });
-
+window.addEventListener('tunescript-seek', event => {
+    if (typeof event.detail !== 'string' || event.detail.length > 4096) return;
+    let data;
+    try { data = JSON.parse(event.detail); } catch { return; }
+    if (typeof data.requestId !== 'string' || !Number.isFinite(data.time) || data.time < 0) return;
+    let ok = false;
+    try {
+        const player = getPlayerApi(), state = readNativePlayerState();
+        const mediaId = new URL(location.href).searchParams.get('v') || '';
+        if (player && data.mediaId === mediaId && (!state?.mediaId || state.mediaId === mediaId) && !state?.ad) {
+            const duration = Number.isFinite(data.duration) && data.duration > 0 ? data.duration : state?.duration;
+            const time = duration > 0 ? Math.min(data.time, Math.max(0, duration - 0.25)) : data.time;
+            player.seekTo(time, true); ok = true;
+        }
+    } catch { /* report failure instead of swallowing it */ }
+    window.dispatchEvent(new CustomEvent('tunescript-seek-result', { detail: JSON.stringify({ requestId: data.requestId, ok }) }));
+});

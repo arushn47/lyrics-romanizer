@@ -1,27 +1,72 @@
-// popup/popup.js — tunescript
-
-const TOGGLES = ['romanization', 'showOriginal', 'originalFirst', 'translation', 'autoOpenLyrics'];
-
-const SETTINGS_DEFAULTS_POPUP = {
-    romanization:   true,
-    showOriginal:   true,
-    originalFirst:  false,
-    translation:    false,
-    autoOpenLyrics: false,
-    fontSize:       100,
-    geminiApiKey:   '',
-};
-
-const FONT_MIN  = 70;
-const FONT_MAX  = 150;
-const FONT_STEP = 10;
-
+// Simple Flash-Lite popup. Display controls save immediately.
+const TOGGLES = ['romanization', 'showOriginal', 'originalFirst', 'translation', 'autoOpenLyrics', 'estimatedScrolling'];
+const FONT_MIN = 70, FONT_MAX = 150, FONT_STEP = 10;
 let currentFontSize = 100;
+let activeSong = null;
+let actionBusy = false;
+let activeSongLoad = 0;
+
+function sendToTab(tabId, message) {
+    return new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(tabId, message, response => {
+            const error = chrome.runtime.lastError;
+            if (error) reject(new Error(error.message));
+            else resolve(response);
+        });
+    });
+}
+
+async function loadActiveSong() {
+    const generation = ++activeSongLoad;
+    activeSong = null;
+    document.getElementById('clearCurrentCache').disabled = true;
+    const badge = document.getElementById('detected-lang');
+    badge.hidden = true;
+    badge.textContent = '';
+    document.getElementById('currentSong').textContent = 'Open a music tab';
+    try {
+        const tabs = await new Promise(resolve => chrome.tabs.query({ active: true, currentWindow: true }, resolve));
+        if (generation !== activeSongLoad || !tabs[0]?.id) return;
+        const state = await sendToTab(tabs[0].id, { type: 'tunescript-state' });
+        if (generation !== activeSongLoad || !state?.currentTrack || !state.currentCacheKey) return;
+        activeSong = { tabId: tabs[0].id, cacheKey: state.currentCacheKey };
+        const title = document.getElementById('currentSong');
+        title.textContent = state.currentSongTitle || state.currentTrack.title;
+        title.title = title.textContent;
+        const language = state.detectedLang;
+        badge.textContent = language && !/automatic|unconfirmed/i.test(language) ? language : '';
+        badge.hidden = !badge.textContent;
+        document.getElementById('clearCurrentCache').disabled = actionBusy;
+    } catch (_) { /* A non-music tab or a reloaded extension has no song receiver. */ }
+}
+// Shared storage is only a notification: always read the active tab's own state.
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && (changes.detectedLang || changes.currentCacheKey)) loadActiveSong();
+});
+chrome.runtime.onMessage.addListener(message => {
+    if (message?.type === 'tunescript-language-changed') loadActiveSong();
+});
+
+async function runPopupAction(action) {
+    if (actionBusy) return;
+    actionBusy = true;
+    document.getElementById('clearCurrentCache').disabled = true;
+    document.getElementById('clearCache').disabled = true;
+    const status = document.getElementById('actionStatus');
+    status.textContent = '';
+    try { await action(status); }
+    catch (_) { status.textContent = 'Reload the music tab and try again.'; }
+    finally {
+        actionBusy = false;
+        document.getElementById('clearCurrentCache').disabled = !activeSong;
+        document.getElementById('clearCache').disabled = false;
+    }
+}
 
 function updateOriginalFirstState(showOriginalChecked) {
     const row = document.getElementById('originalFirstRow');
     const cb  = document.getElementById('originalFirst');
-    if (showOriginalChecked) {
+    if (showOriginalChecked && document.getElementById('romanization').checked) {
         row.classList.remove('disabled');
         cb.disabled = false;
     } else {
@@ -37,99 +82,37 @@ function updateFontSizeDisplay() {
     document.getElementById('fontIncrease').disabled = currentFontSize >= FONT_MAX;
 }
 
-// ── API status dot ────────────────────────────────────────────────────────
-function setApiStatus(connected) {
-    const dot   = document.getElementById('apiDot');
-    const label = document.getElementById('apiLabel');
-    if (connected) {
-        dot.style.background   = '#22c55e';
-        dot.style.boxShadow    = '0 0 0 0 rgba(34,197,94,0.4)';
-        label.textContent      = 'API connected';
-    } else {
-        dot.style.background   = 'rgba(255,255,255,0.25)';
-        dot.style.boxShadow    = 'none';
-        dot.style.animation    = 'none';
-        label.textContent      = 'No API key';
-    }
+function setGeminiStatus(saved = false) {
+    const dot = document.getElementById('apiDot');
+    dot.style.background = saved ? '#22c55e' : 'rgba(255,255,255,0.25)';
+    dot.style.boxShadow = 'none'; dot.style.animation = 'none';
+    document.getElementById('apiLabel').textContent = saved ? 'Key saved' : 'Add API key';
+    document.getElementById('geminiStatus').textContent = saved
+        ? 'Used for pronunciation and English meaning. Saved songs reuse their results.'
+        : 'Sign in to Google AI Studio, create or copy a key, then paste it here. Saves automatically.';
 }
-
 async function load() {
-    const settings = await new Promise(r =>
-        chrome.storage.sync.get(SETTINGS_DEFAULTS_POPUP, r)
-    );
-
-    TOGGLES.forEach(id => {
-        document.getElementById(id).checked = settings[id];
-    });
-    document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
-
+    const settings = applyGeminiDefaults(await new Promise(resolve => chrome.storage.sync.get(SETTINGS_DEFAULTS, resolve)));
+    TOGGLES.forEach(id => { document.getElementById(id).checked = settings[id]; });
     currentFontSize = settings.fontSize ?? 100;
-    updateFontSizeDisplay();
-    updateOriginalFirstState(settings.showOriginal);
-
-    // API status based on whether key is set
-    setApiStatus(!!settings.geminiApiKey);
-
-    // Show detected language (written by content script after each song)
-    const stored = await new Promise(r => chrome.storage.local.get(['detectedLang', 'currentSongTitle', 'currentCacheKey'], r));
-    const badge  = document.getElementById('detected-lang');
-    if (stored.detectedLang && badge) {
-        badge.textContent = `Detected: ${stored.detectedLang}`;
-    }
-
-    // Dynamic label for current song re-transliterate button
-    const currentLabel = document.getElementById('currentSongLabel');
-    if (currentLabel) {
-        if (stored.currentSongTitle) {
-            const title = stored.currentSongTitle;
-            const shortTitle = title.length > 20 ? title.slice(0, 18) + '…' : title;
-            currentLabel.textContent = `Re-transliterate "${shortTitle}"`;
-        } else {
-            currentLabel.textContent = 'Re-transliterate current song';
-        }
-    }
+    updateFontSizeDisplay(); updateOriginalFirstState(settings.showOriginal);
+    document.getElementById('geminiApiKey').value = settings.geminiApiKey || '';
+    setGeminiStatus(!!settings.geminiApiKey);
+    await loadActiveSong();
 }
-
 function save() {
-    const updated = {};
-    TOGGLES.forEach(id => {
-        const el    = document.getElementById(id);
-        updated[id] = el.disabled ? false : el.checked;
-    });
-    updated.geminiApiKey = document.getElementById('geminiApiKey').value.trim();
-    updated.fontSize     = currentFontSize;
+    const updated = { fontSize: currentFontSize };
+    TOGGLES.forEach(id => { const el = document.getElementById(id); updated[id] = !el.disabled && el.checked; });
     chrome.storage.sync.set(updated);
-    setApiStatus(!!updated.geminiApiKey);
 }
-
-// Inline cache-clear logic
-async function clearAllCachePopup() {
-    const all  = await new Promise(resolve => chrome.storage.local.get(null, resolve));
-    const keys = Object.keys(all).filter(k => k.startsWith('tunescript_'));
-    return new Promise(resolve => chrome.storage.local.remove(keys, resolve));
-}
-
-// ── Save button with flash feedback ──────────────────────────────────────
-document.getElementById('saveBtn').addEventListener('click', () => {
-    save();
-    const btn      = document.getElementById('saveBtn');
-    btn.textContent = 'Saved ✓';
-    btn.classList.add('saved');
-    setTimeout(() => {
-        btn.textContent = 'Save';
-        btn.classList.remove('saved');
-    }, 1200);
+document.getElementById('geminiApiKey').addEventListener('change', () => {
+    const geminiApiKey = document.getElementById('geminiApiKey').value.trim();
+    chrome.storage.sync.set({ geminiApiKey });
+    setGeminiStatus(!!geminiApiKey);
 });
-
-// ── Wire up toggles ───────────────────────────────────────────────────────
-TOGGLES.forEach(id => document.getElementById(id).addEventListener('change', save));
-document.getElementById('geminiApiKey').addEventListener('input', save);
-
-document.getElementById('showOriginal').addEventListener('change', e => {
-    updateOriginalFirstState(e.target.checked);
-    save();
-});
-
+TOGGLES.forEach(id => document.getElementById(id).addEventListener('change', () => save()));
+document.getElementById('showOriginal').addEventListener('change', event => { updateOriginalFirstState(event.target.checked); save(); });
+document.getElementById('romanization').addEventListener('change', () => { updateOriginalFirstState(document.getElementById('showOriginal').checked); save(); });
 // Font size buttons
 document.getElementById('fontDecrease').addEventListener('click', () => {
     if (currentFontSize > FONT_MIN) {
@@ -146,52 +129,18 @@ document.getElementById('fontIncrease').addEventListener('click', () => {
     }
 });
 
-// Re-transliterate / clear current song cache
-const clearCurrentBtn = document.getElementById('clearCurrentCache');
-if (clearCurrentBtn) {
-    clearCurrentBtn.addEventListener('click', async () => {
-        const all = await new Promise(r => chrome.storage.local.get(null, r));
-        const toRemove = [];
-        if (all.currentCacheKey) {
-            toRemove.push(all.currentCacheKey);
-            toRemove.push(all.currentCacheKey.replace('tunescript_', 'akshar_'));
-        }
-        if (all.currentSongTitle) {
-            const cleanTitle = all.currentSongTitle.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-            for (const k of Object.keys(all)) {
-                if (k.startsWith('tunescript_') || k.startsWith('akshar_')) {
-                    if (k.toLowerCase().includes(cleanTitle.slice(0, 12))) {
-                        toRemove.push(k);
-                    }
-                }
-            }
-        }
-        if (toRemove.length > 0) {
-            console.log('[Tunescript Popup] Clearing song cache keys:', toRemove);
-            await new Promise(r => chrome.storage.local.remove(toRemove, r));
-        }
-
-        // Force the music player tab to immediately re-process the song with AI
-        await new Promise(r => chrome.storage.local.set({ forceSongReload: Date.now() }, r));
-
-        const label = document.getElementById('currentSongLabel');
-        const prevText = label ? label.textContent : '';
-        clearCurrentBtn.classList.add('success');
-        if (label) label.textContent = 'Re-transliterating… ✓';
-
-        setTimeout(() => {
-            if (label) label.textContent = prevText;
-            clearCurrentBtn.classList.remove('success');
-        }, 1800);
-    });
-}
-
-// Clear all cached songs
-document.getElementById('clearCache').addEventListener('click', async () => {
-    await clearAllCachePopup();
-    const btn      = document.getElementById('clearCache');
-    btn.textContent = 'All cache cleared ✓';
-    setTimeout(() => { btn.textContent = 'Clear all cached lyrics'; }, 1500);
-});
+document.getElementById('clearCurrentCache').addEventListener('click', () => runPopupAction(async status => {
+    if (!activeSong) return;
+    const result = await sendToTab(activeSong.tabId, { type: 'tunescript-rerun', cacheKey: activeSong.cacheKey });
+    if (result?.ok) status.textContent = 'Re-transliterating pronunciation and translation…';
+    else {
+        await loadActiveSong();
+        status.textContent = 'The song changed. Try again for the current song.';
+    }
+}));
+document.getElementById('clearCache').addEventListener('click', () => runPopupAction(async status => {
+    await clearAllCache();
+    status.textContent = 'Cached lyrics cleared. Your key and settings are kept.';
+}));
 
 load();

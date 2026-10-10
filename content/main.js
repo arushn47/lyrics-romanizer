@@ -13,6 +13,27 @@ console.log('[Tunescript] main.js loaded ✓');
 
 // Single AbortController shared across the tab — cancelled on every song change.
 let currentAbortController = null;
+let currentSongGeneration = 0;
+let currentSongRequest = null;
+let currentTrackInfo = null;
+let currentCacheKeyValue = null;
+chrome.runtime?.onMessage?.addListener((message, _sender, reply) => {
+    if (message?.type === 'tunescript-state') reply({ currentTrack: currentTrackInfo, currentCacheKey: currentCacheKeyValue, currentSongTitle: currentTrackInfo?.title || '', detectedLang: currentDetectedLanguage || '' });
+    if (message?.type === 'tunescript-rerun') {
+        rerunCurrentSong(message.cacheKey).then(ok => reply({ ok }), () => reply({ ok: false }));
+        return true;
+    }
+});
+let currentDetectedLanguage = '';
+function publishDetectedLanguages(codes) {
+    currentDetectedLanguage = formatLyricLanguages(codes);
+    chrome.storage.local.set({ detectedLang: currentDetectedLanguage });
+    // A second tab may already have stored the same label, so a storage change
+    // alone cannot reliably notify an open popup when this song finishes.
+    chrome.runtime?.sendMessage?.({ type: 'tunescript-language-changed' }, () => { void chrome.runtime.lastError; });
+}
+const displaySettingOverrides = {};
+function latestDisplaySettings(settings) { return { ...settings, ...displaySettingOverrides }; }
 
 // Last successfully processed song data — kept so settings changes can re-render live.
 let currentProcessedLines = null;
@@ -25,20 +46,68 @@ let currentSongStartVideoTime = 0;
 // so seeks can't overshoot the song end (triggering auto-advance to next song).
 let currentSongDuration = 0;
 
+/** Invalidate the previous song before platform metadata/container waits begin. */
+function beginSongRequest() {
+    currentAbortController?.abort();
+    currentAbortController = new AbortController();
+    const generation = ++currentSongGeneration;
+    const signal = currentAbortController.signal;
+    currentSongRequest = {
+        signal,
+        isCurrent: () => generation === currentSongGeneration && !signal.aborted,
+    };
+    currentProcessedLines = null;
+    currentTrackInfo = null;
+    currentCacheKeyValue = null;
+    currentDetectedLanguage = '';
+    stopSync();
+    resetScrollState();
+    if (typeof clearLyricsPanel === 'function') clearLyricsPanel({ forgetContent: true });
+    return currentSongRequest;
+}
+
+function throwIfSongRequestAborted(signal) {
+    if (signal?.aborted) throw new DOMException('Song changed', 'AbortError');
+}
+
+function retryCurrentSong(request = currentSongRequest) {
+    if (!request?.isCurrent()) return false;
+    if (currentTrackInfo?.platform === 'ytmusic' && typeof onYTMSongChange === 'function') onYTMSongChange(false, true);
+    else if (currentTrackInfo?.platform === 'spotify' && typeof onSpotifySongChange === 'function') onSpotifySongChange(false, true);
+    else return false;
+    return true;
+}
+
+async function rerunCurrentSong(expectedKey) {
+    const request = currentSongRequest;
+    const platform = currentTrackInfo?.platform;
+    if (!request?.isCurrent() || !expectedKey || expectedKey !== currentCacheKeyValue) return false;
+    if (platform !== 'ytmusic' && platform !== 'spotify') return false;
+    // Remove both the recording and its shared transformation before retrying.
+    // A navigation during this storage operation must never rerun the next song.
+    await clearSongCache(expectedKey);
+    if (!request.isCurrent() || expectedKey !== currentCacheKeyValue) return false;
+    if (platform === 'ytmusic' && typeof onYTMSongChange === 'function') onYTMSongChange(true, true);
+    else if (platform === 'spotify' && typeof onSpotifySongChange === 'function') onSpotifySongChange(true, true);
+    else return false;
+    return true;
+}
+
 // ── Live settings: re-render immediately when popup toggles change ─────────────
 chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'sync') {
         const displayKeys = ['romanization', 'showOriginal', 'originalFirst', 'translation', 'fontSize'];
+        for (const key of displayKeys) if (key in changes) displaySettingOverrides[key] = changes[key].newValue ?? SETTINGS_DEFAULTS[key];
         const hasDisplayChange = displayKeys.some(k => k in changes);
         if (hasDisplayChange && currentProcessedLines) {
             console.log('[Tunescript] Settings changed — re-rendering panel live');
-            getSettings().then(settings => renderPanel(currentProcessedLines, settings, currentSongDuration)).catch(() => { });
-        }
-    } else if (area === 'local' && changes.forceSongReload) {
-        console.log('[Tunescript] Force song reload requested via popup');
-        currentProcessedLines = null;
-        if (typeof window.onYTMSongChange === 'function') {
-            window.onYTMSongChange(true);
+            const request = currentSongRequest;
+            const lines = currentProcessedLines;
+            getSettings().then(settings => {
+                if (request?.isCurrent() && lines === currentProcessedLines) {
+                    renderPanel(lines, latestDisplaySettings(settings), currentSongDuration);
+                }
+            }).catch(() => { });
         }
     }
 });
@@ -54,8 +123,11 @@ function reRenderCurrentLyrics() {
         return;
     }
     console.log('[Tunescript] reRenderCurrentLyrics: re-injecting panel with cached data');
-    getSettings().then(settings => {
-        renderPanel(currentProcessedLines, settings, currentSongDuration);
+    const request = currentSongRequest;
+    const lines = currentProcessedLines;
+    return getSettings().then(settings => {
+        if (!request?.isCurrent() || lines !== currentProcessedLines) return;
+        renderPanel(lines, latestDisplaySettings(settings), currentSongDuration);
         // Force the active sync loop to re-apply highlight to the newly rendered DOM elements
         if (typeof resetSyncLastIndex === 'function') {
             resetSyncLastIndex();
@@ -72,72 +144,6 @@ function reRenderCurrentLyrics() {
     }).catch(() => { });
 }
 
-/**
- * Align Gemini results to input lines when counts don't match.
- * Uses fuzzy matching on romanized text to find where extra entries
- * were inserted or lines were skipped, then corrects the alignment.
- *
- * @param {string[]} inputLines - Original plain text lyrics.
- * @param {Array<{r: string, t: string}>} results - Gemini output.
- * @returns {Array<{r: string, t: string}>} - Aligned array, same length as inputLines.
- */
-function alignResults(inputLines, results) {
-    const n = inputLines.length;
-
-    // If Gemini returned more entries: try to find and remove extras.
-    // Strategy: walk both arrays. If result[j].r closely matches input[i],
-    // pair them. If not, skip the result entry (it's extra).
-    if (results.length > n) {
-        const aligned = [];
-        let j = 0;
-        for (let i = 0; i < n; i++) {
-            if (j >= results.length) {
-                // Ran out of results — pad with original
-                aligned.push({ r: inputLines[i], t: '' });
-                continue;
-            }
-            // Check if current result matches current input
-            // (simple: normalized text similarity)
-            const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const inputNorm = norm(inputLines[i]);
-            const currNorm = norm(results[j]?.r || '');
-            const nextNorm = j + 1 < results.length ? norm(results[j + 1]?.r || '') : '';
-
-            // If next result is a better match, skip current (it's extra)
-            if (inputNorm && nextNorm && _similarity(inputNorm, nextNorm) > _similarity(inputNorm, currNorm)) {
-                console.log(`[Tunescript] alignResults: skipping extra entry at ${j}: "${results[j]?.r?.slice(0, 40)}"`);
-                j++; // skip the extra
-            }
-            aligned.push(results[j] || { r: inputLines[i], t: '' });
-            j++;
-        }
-        console.log(`[Tunescript] alignResults: trimmed ${results.length} → ${aligned.length}`);
-        return aligned;
-    }
-
-    // If Gemini returned fewer entries: pad with originals (already handled by gemini.js,
-    // but double-check here)
-    if (results.length < n) {
-        const padded = [...results];
-        while (padded.length < n) {
-            padded.push({ r: inputLines[padded.length], t: '' });
-        }
-        console.log(`[Tunescript] alignResults: padded ${results.length} → ${padded.length}`);
-        return padded;
-    }
-
-    return results;
-}
-
-/** Simple character overlap similarity (0-1). */
-function _similarity(a, b) {
-    if (!a || !b) return 0;
-    const setA = new Set(a);
-    const setB = new Set(b);
-    let overlap = 0;
-    for (const ch of setA) if (setB.has(ch)) overlap++;
-    return (2 * overlap) / (setA.size + setB.size);
-}
 
 
 /**
@@ -148,13 +154,16 @@ async function getSettings() {
     // chrome.storage throws if the extension was reloaded while the tab is open.
     // Return defaults so callers can still render gracefully.
     try {
-        return new Promise(resolve => {
-            chrome.storage.sync.get(SETTINGS_DEFAULTS, resolve);
-        });
+        const settings = applyGeminiDefaults(await new Promise(resolve => chrome.storage.sync.get(SETTINGS_DEFAULTS, resolve)));
+        return settings;
     } catch (e) {
         console.warn('[Tunescript] getSettings: extension context invalidated — using defaults');
         return SETTINGS_DEFAULTS;
     }
+}
+
+async function getTrackSettings(track) {
+    return getSettings();
 }
 
 /**
@@ -168,7 +177,21 @@ async function getSettings() {
  * @param {string}   opts.platform     - 'spotify' | 'ytmusic' — used in cache key.
  * @param {Function} opts.getDomLyrics - () => string[] — DOM scrape fallback.
  */
-async function handleSongChange({ title, artist, duration, platform, getDomLyrics }) {
+async function handleSongChange(options) {
+    const request = options.request || beginSongRequest();
+    if (!request.isCurrent()) return;
+    try {
+        await processSongChange(options, request);
+    } catch (error) {
+        if (!request.isCurrent() || error.name === 'AbortError') return;
+        console.error('[Tunescript] Song processing failed:', error);
+        showErrorPanel('Unable to load lyrics for this song. Please try again.');
+    }
+}
+
+async function processSongChange(track, request) {
+    const { title, artist, duration, platform, getDomLyrics } = track;
+    const { signal, isCurrent } = request;
     // Guard against extension context invalidation (extension reloaded while tab is open)
     try { chrome.storage.sync.getBytesInUse(null, () => { }); } catch (e) {
         console.warn('[Tunescript] handleSongChange: extension context invalidated — aborting');
@@ -190,32 +213,19 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
         `video.duration=${getMainVideo()?.duration}`
     );
 
-    // ── Step 0: Clear stale data and stop previous sync ───────────────────
-    // This prevents the previous song's lyrics from re-appearing when the
-    // new song has no lyrics (empty Lyrics tab) and a settings change triggers
-    // re-render via the storage.onChanged listener.
-    currentProcessedLines = null;
-    stopSync();  // Kill previous song's sync loop immediately
-    resetScrollState(); // Unpause auto-scroll and hide the resume button
-
-    // ── Step 1: Cancel any in-flight request from the previous song ──────────
-    if (currentAbortController) {
-        console.log('[Tunescript] Aborting previous in-flight request');
-        currentAbortController.abort();
-    }
-    currentAbortController = new AbortController();
-    const signal = currentAbortController.signal;
-
     // ── Step 2: Show skeleton immediately — don't wait for API ───────────────
     showLoadingPanel();
     console.log('[Tunescript] Skeleton panel shown');
 
-    const settings = await getSettings();
+    const settings = await getTrackSettings(track);
+    if (!isCurrent()) return;
     // NOTE: API key check is deferred until just before the Gemini call.
     // This way, LRCLIB fetch and language detection still run and log
     // even when no key is set — useful for testing.
 
-    const cacheKey = makeCacheKey(platform, title, artist);
+    const cacheKey = makeCacheKey(platform, title, artist, { ...track, engine: 'gemini', model: settings.geminiModel, language: settings.languageOverride, estimatedScrolling: settings.estimatedScrolling });
+    currentTrackInfo = { platform, title, artist, artists: track.artists || [artist], duration, mediaId: track.mediaId || '', album: track.album || '', year: track.year || null, mode: track.mode || '' };
+    currentCacheKeyValue = cacheKey;
     console.log(`[Tunescript] Cache key: ${cacheKey}`);
 
     // Store active song identity so popup can target current song cache
@@ -224,35 +234,97 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
         currentSongTitle: title,
         currentSongArtist: artist,
         currentPlatform: platform,
+        detectedLang: '',
+        currentTrack: { platform, title, artist, duration, mediaId: track.mediaId || '', album: track.album || '', year: track.year || null, mode: track.mode || '' },
     });
 
     // ── Step 3: Cache hit → instant render ───────────────────────────────────
     // If user has a Gemini key, do NOT accept cached offline-fallback entries — upgrade them to AI!
     const allowFallback = !settings.geminiApiKey;
-    const cached = await getCached(cacheKey, allowFallback);
+    const transformComplete = (source, roman, meaning) => typeof isCompleteLyricTransform !== 'function' || isCompleteLyricTransform(source, roman, meaning);
+    let cached = await getCached(cacheKey, allowFallback);
+    if (!isCurrent()) return;
+    if (cached?.metadata?.engine && !['gemini', 'source'].includes(cached.metadata.engine)) cached = null;
+    if (cached && !cached.isFallback && !cached.data.every(line => transformComplete(line.original, line.romanized, line.translation, cached.metadata?.language))) cached = null;
+    let savedSynced = false;
     if (cached) {
         console.log('[Tunescript] ✅ Cache HIT — rendering immediately');
         currentProcessedLines = cached.data;  // keep for live settings re-render
+        publishDetectedLanguages(cached.metadata?.languages ?? [cached.metadata?.language]);
+        if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(cached.metadata?.attribution || 'Saved lyrics', cached.metadata?.timingMode || 'unsynced', cached.metadata?.searchSummary);
         hideLoadingPanel();
-        renderPanel(cached.data, settings, currentSongDuration);
+        renderPanel(cached.data, latestDisplaySettings(settings), currentSongDuration);
         console.log('[Tunescript] Starting timed sync from cache');
         startTimedSync(cached.data, { duration, songStartVideoTime });
+        if (cached.isFallback) showStatusBar(cached.metadata?.processingWarning || 'Showing source lyrics; translation is unavailable.', 'warn');
+        else if (cached.metadata?.processingWarning) showStatusBar(cached.metadata.processingWarning, 'warn');
+        else if (cached.metadata?.engine && cached.metadata.engine !== settings.engine) showStatusBar('Saved result from your ' + cached.metadata.engine + ' engine.', 'info');
+        const genuineTiming = cached.metadata?.timingMode === 'synced' || (!cached.metadata?.timingMode && cached.data.every(line => Number.isFinite(line.time) && !line.isEstimated));
+        if (genuineTiming) return;
+        savedSynced = genuineTiming;
+        showStatusBar('Checking sources for time-synced lyrics…', 'info');
+    }
+    console.log('[Tunescript] Searching lyric sources for verified timing…');
+
+    // ── Step 4: Search enabled timing-capable providers ─────────────────────
+    const savedSource = summary => ({ synced: savedSynced, lines: cached.data.map(line => ({ id: line.id, type: line.type, time: line.time, isEstimated: line.isEstimated, text: line.original, ...(cached.metadata?.nativeSource ? { romanizedSource: line.romanized } : {}) })), attribution: cached.metadata?.attribution || 'Saved lyrics', provider: cached.metadata?.provider || 'native', id: cached.metadata?.providerId || null, searchSummary: summary, nativeSource: cached.metadata?.nativeSource, nativeAttribution: cached.metadata?.nativeAttribution });
+    const sourceOptions = { preferNativeForTranslation: false,
+        onSynced: candidate => {
+            if (!isCurrent() || !candidate.synced || !sourceOptions.preferNativeForTranslation) return;
+            const source = typeof cleanLyricLines === 'function' ? cleanLyricLines(candidate.lines, track).lines : candidate.lines;
+            const rows = source.map((line, i) => ({ id: line.id, type: line.type, time: line.time, original: line.text,
+                romanized: cached?.data[i]?.original === line.text ? cached.data[i].romanized : line.text,
+                translation: cached?.data[i]?.original === line.text ? cached.data[i].translation : '' }));
+            currentProcessedLines = rows;
+            hideLoadingPanel(); renderPanel(rows, latestDisplaySettings(settings), currentSongDuration);
+            if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(candidate.attribution || 'Lyrics from LRCLIB', 'synced');
+            startTimedSync(rows, { duration, songStartVideoTime });
+            showStatusBar('Checking native lyrics for translation…', 'info');
+        } };
+    let lrcResult = savedSynced ? savedSource(cached.metadata?.searchSummary) : typeof resolveLyricSources === 'function' ? await resolveLyricSources(track, getDomLyrics, signal, sourceOptions) : await fetchLRCLIB(title, artist, duration, signal, track);
+    if (!isCurrent()) return;
+    if (lrcResult?.ambiguous) {
+        showMatchPanel(lrcResult.candidates, async candidate => {
+            if (!isCurrent()) return;
+            if (lrcResult.choiceKey) await new Promise(resolve => chrome.storage.local.set({ [lrcResult.choiceKey]: typeof lyricCandidateKey === 'function' ? lyricCandidateKey(candidate) : candidate.id }, resolve));
+            if (!isCurrent()) return;
+            if (typeof onYTMSongChange === 'function') onYTMSongChange(false, true);
+            else if (typeof onSpotifySongChange === 'function') onSpotifySongChange(true);
+        });
         return;
     }
-    console.log('[Tunescript] Cache MISS — fetching from LRCLIB…');
-
-    // ── Step 4: Fetch from LRCLIB (primary) ──────────────────────────────────
-    let lrcResult = await fetchLRCLIB(title, artist, duration, signal);
+    if (cached && !lrcResult?.synced && cached.metadata?.retryableLocal) {
+        // Keep the exact source text so completed meanings remain reusable.
+        lrcResult = savedSource(lrcResult?.searchSummary || 'No verified synced match in the checked sources.');
+    }
+    if (cached && !lrcResult?.synced && !cached.metadata?.retryableLocal) {
+        // Keep the completed text while searching; a plain cache is never proof
+        // that no timed edition exists. A miss must not spend AI quota again.
+        const summary = lrcResult?.searchSummary || 'No verified synced match in the checked sources.';
+        if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(cached.metadata?.attribution || 'Saved lyrics', cached.metadata?.timingMode || 'unsynced', summary);
+        renderPanel(cached.data, latestDisplaySettings(settings), currentSongDuration);
+        if (cached.isFallback) showStatusBar(cached.metadata?.processingWarning || 'Saved basic pronunciation or original text; contextual translation is unavailable.', 'warn');
+        else hideStatusBar();
+        return;
+    }
     let isSynced = false;
     let rawLines;
 
-    if (lrcResult) {
+    if (lrcResult && !lrcResult.missing) {
         rawLines = lrcResult.lines;
         isSynced = lrcResult.synced;
         console.log(`[Tunescript] LRCLIB ✅ ${isSynced ? 'synced' : 'plain'} — ${rawLines.length} lines`);
     } else {
+        if (typeof resolveLyricSources === 'function') {
+            const reports = lrcResult?.searchReports || [];
+            const unavailable = reports.some(report => !['complete', 'limited'].includes(report.status));
+            const message = unavailable ? 'Lyric search incomplete because a source is unavailable. Please try again.' : reports.some(report => report.status === 'limited') ? 'No lyric match was found within the source’s result limit.' : 'Lyrics not available in the checked sources.';
+            showErrorPanel(message);
+            return;
+        }
         console.log('[Tunescript] LRCLIB returned nothing — trying DOM fallback…');
-        const domText = await getDomLyrics();
+        const domText = await getDomLyrics({ signal });
+        if (!isCurrent()) return;
         if (!domText || domText.length === 0) {
             console.log('[Tunescript] DOM fallback also empty — no lyrics available');
             showErrorPanel('Lyrics not available for this song.');
@@ -263,38 +335,50 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
         console.log(`[Tunescript] DOM fallback: ${rawLines.length} lines (no sync)`);
     }
 
+    if (typeof cleanLyricLines === 'function') rawLines = cleanLyricLines(rawLines, track).lines;
+    if (!rawLines.length) { showErrorPanel('No sung lyric lines were found for this song.'); return; }
+    if (typeof validLyricTimeline === 'function' && !validLyricTimeline(rawLines, duration)) {
+        isSynced = false;
+        rawLines = rawLines.map(line => ({ ...line, time: null }));
+    }
+    if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(lrcResult?.attribution || 'Lyrics from the music platform', isSynced ? 'synced' : 'unsynced', lrcResult?.searchSummary);
+    if (!isSynced && settings.estimatedScrolling && typeof estimateLineTimestamps === 'function') {
+        rawLines = estimateLineTimestamps(rawLines, duration);
+        if (typeof setLyricsSourceInfo === 'function') setLyricsSourceInfo(lrcResult?.attribution || 'Lyrics from the music platform', 'estimated', lrcResult?.searchSummary);
+    }
+
     // ── Step 4.5: Show raw lyrics immediately ─────────────────────────────────
     // Display fetched lyrics right away while romanization + translation
     // processes in the background. Eliminates the 30-40s wait.
-    const preliminaryLines = rawLines.map(line => ({
+    const preliminaryLines = rawLines.map((line, i) => ({
+        id: line.id,
+        type: line.type,
+        isEstimated: line.isEstimated,
         time: line.time,
         original: line.text,
-        romanized: line.text,  // show original text as placeholder
-        translation: '',
+        romanized: line.romanizedSource ?? (cached?.data[i]?.original === line.text ? cached.data[i].romanized : line.text),
+        translation: cached?.data[i]?.original === line.text ? cached.data[i].translation : '',
     }));
     currentProcessedLines = preliminaryLines;
     hideLoadingPanel();
-    renderPanel(preliminaryLines, settings, currentSongDuration);
+    renderPanel(preliminaryLines, latestDisplaySettings(settings), currentSongDuration);
     showStatusBar('Romanizing lyrics…', 'info');
     console.log('[Tunescript] Panel rendered with raw lyrics (processing in background)…');
     console.log('[Tunescript] Starting timed sync with raw lyrics');
     startTimedSync(preliminaryLines, { duration, songStartVideoTime });
 
     // ── Step 5: Detect language ───────────────────────────────────────────────
-    // LRCLIB lyrics and YTM DOM-scraped lyrics are often in romanized Latin
-    // script — the Indic Unicode detector would return null for these.
-    // Try script detection first; if it fails but we have lyrics, default to
-    // Hindi since this extension targets Indian language songs.
+    // Resolve unique scripts directly and shared scripts with the browser's
+    // local classifier. Unconfirmed text stays readable without guessing.
     const fullText = rawLines.map(l => l.text).join(' ');
-    let lang = detectLanguage(fullText);
+    let lang = typeof detectLyricLanguage === 'function' ? await detectLyricLanguage(fullText, signal) : detectLanguage(fullText);
+    if (!isCurrent()) return;
     console.log(`[Tunescript] Language detected: ${lang ? LANGUAGE_NAMES[lang] : 'none (not an Indic script)'}`);
 
     if (!lang && rawLines.length > 0) {
-        // Lyrics exist but in Latin/romanized script. 
-        // We don't know the exact language (could be Tamil, Hindi, Telugu).
-        // Let Gemini auto-detect it based on the words.
+        // Short, mixed or Roman text may not identify a language reliably.
         lang = 'unknown';
-        console.log('[Tunescript] Romanized lyrics detected — delegating language detection to Gemini');
+        console.log('[Tunescript] Automatic language detection is unconfirmed for these lyrics');
     }
 
     if (!lang) {
@@ -303,138 +387,105 @@ async function handleSongChange({ title, artist, duration, platform, getDomLyric
         return;
     }
 
-    // Don't show "Unknown" in storage if possible, but keep it so popup doesn't crash
-    const displayLang = lang === 'unknown' ? 'Auto-detected' : LANGUAGE_NAMES[lang];
-    chrome.storage.local.set({ detectedLang: displayLang });
+    // The browser hint guides processing; Gemini identifies actual source languages,
+    // including Roman and mixed lyrics, in the same transformation request.
+    publishDetectedLanguages([]);
 
-    // ── Step 6: Get romanization + translation (background) ──────────────────
-    // Raw lyrics are already visible and syncing — this upgrades them in-place.
-    let aiResults;
+    // Wait for a settled song before spending AI quota. Never retry quota
+    // or authentication failures with smaller requests.
+    const plainLines = rawLines.map(line => line.text);
+    const reusableText = cached && !cached.isFallback && cached.data.length === rawLines.length && rawLines.every((line, i) => line.text === cached.data[i].original);
+    let aiResults = reusableText ? cached.data.map(line => ({ r: line.romanized, t: line.translation, languages: line.languages })) : null;
     let isFallbackResult = false;
-
-    if (!settings.geminiApiKey) {
-        console.warn('[Tunescript] ❌ No Gemini API key — using offline romanization + fallback translation');
-        showStatusBar('No API key — using offline romanization…', 'warn');
-        isFallbackResult = true;
-        const offlineResults = offlineTransliterate(rawLines.map(l => l.text));
-        // Try MyMemory free translation for supported Indic languages
-        let translations = rawLines.map(() => '');
-        try {
-            showStatusBar('Translating via MyMemory…', 'info');
-            translations = await fallbackTranslate(rawLines.map(l => l.text), lang, signal);
-        } catch (e) {
-            if (e.name === 'AbortError') throw e;
-            console.warn('[Tunescript] MyMemory fallback failed:', e.message);
-        }
-        aiResults = rawLines.map((_, i) => ({
-            r: offlineResults[i]?.r ?? rawLines[i].text,
-            t: translations[i] || '',
+    let processingWarning = '';
+    const cumulativeResults = [];
+    const onProgress = chunk => {
+        if (!isCurrent()) return;
+        cumulativeResults.push(...chunk);
+        const partial = rawLines.map((line, i) => ({
+            id: line.id, type: line.type,
+            isEstimated: line.isEstimated,
+            time: line.time, original: line.text,
+            romanized: line.romanizedSource ?? cumulativeResults[i]?.r ?? line.text,
+            translation: cumulativeResults[i]?.t ?? '',
         }));
-    } else {
-        const logLang = lang === 'unknown' ? 'Auto-detect' : LANGUAGE_NAMES[lang];
-        console.log(`[Tunescript] API key present ✓ — Calling AI (${logLang}, ${rawLines.length} lines)…`);
-        try {
-            const plainLines = rawLines.map(l => l.text);
-
-            // Progressive rendering array
-            const cumulativeResults = [];
-            const onProgress = (chunk) => {
-                cumulativeResults.push(...chunk);
-
-                // Construct a partial processed array for immediate UI updates
-                const partialProcessed = rawLines.map((line, i) => ({
-                    time: line.time,
-                    original: line.text,
-                    romanized: cumulativeResults[i]?.r ?? line.text, // fall back to original text if not processed yet
-                    translation: cumulativeResults[i]?.t ?? '',
-                }));
-
-                console.log(`[Tunescript] Progressive render: ${cumulativeResults.length}/${rawLines.length} lines`);
-                currentProcessedLines = partialProcessed;
-                renderPanel(partialProcessed, settings, currentSongDuration);
-                // Keep sync active if we have timestamps
-                if (lastActiveIndex >= 0) setActiveLine(lastActiveIndex);
-            };
-
-            aiResults = await romanizeAndTranslate(plainLines, lang, settings.geminiApiKey, signal, onProgress);
-            console.log(`[Tunescript] AI ✅ returned ${aiResults.length} entries`);
-        } catch (e) {
-            if (e.name === 'AbortError') {
-                console.log('[Tunescript] AI request aborted (song changed) — dropping');
-                return;
-            }
-            console.error('[Tunescript] ❌ Gemini/Ollama single-call error:', e);
-            console.log('[Tunescript] Retrying with chunked Gemini calls…');
-
-            // ── Chunked retry: smaller batches are less likely to truncate ────
+        currentProcessedLines = partial;
+        renderPanel(partial, latestDisplaySettings(settings), currentSongDuration);
+        if (lastActiveIndex >= 0) setActiveLine(lastActiveIndex);
+    };
+    const engine = 'gemini';
+    let usedEngine = reusableText ? cached.metadata?.engine || engine : engine;
+    const transformKey = typeof transformationCacheKey === 'function' ? await transformationCacheKey(rawLines, lang, settings) : null;
+    if (!isCurrent()) return;
+    let savedTransform = transformKey ? await getCached(transformKey, false) : null;
+    if (!isCurrent()) return;
+    if (savedTransform && (savedTransform.data.length !== plainLines.length || !savedTransform.data.every((entry, i) => transformComplete(plainLines[i], entry.r, entry.t, lang)))) savedTransform = null;
+    if (savedTransform) aiResults = savedTransform.data;
+    try {
+        if (aiResults) {
+            // Transformation reuse never reuses another recording's timestamps.
+        } else if (settings.geminiApiKey) {
+            if (typeof waitForRequestSettle === 'function') await waitForRequestSettle(Math.max(0, Math.min(settings.processingDelayMs ?? 900, 5000)), signal);
+            if (!isCurrent()) return;
+            showStatusBar('Romanizing and translating…', 'info');
             try {
-                const plainLines = rawLines.map(l => l.text);
-                aiResults = await romanizeAndTranslateChunked(plainLines, lang, settings.geminiApiKey, signal);
-                console.log(`[Tunescript] Gemini chunked ✅ returned ${aiResults.length} entries`);
-            } catch (e2) {
-                if (e2.name === 'AbortError') {
-                    console.log('[Tunescript] Gemini chunked request aborted (song changed) — dropping');
-                    return;
-                }
-                console.error('[Tunescript] ❌ Gemini chunked also failed:', e2);
-
-                // ── Ollama fallback: try local model before giving up ────
-                try {
-                    console.log('[Tunescript] Trying Ollama as fallback…');
-                    showStatusBar('Gemini quota hit — trying Ollama…', 'warn');
-                    const plainLines2 = rawLines.map(l => l.text);
-                    aiResults = await callOllama(plainLines2, lang === 'unknown' ? 'Indian (auto-detect)' : LANGUAGE_NAMES[lang], signal, onProgress);
-                    console.log(`[Tunescript] Ollama fallback ✅ returned ${aiResults.length} entries`);
-                } catch (e3) {
-                    if (e3.name === 'AbortError') {
-                        console.log('[Tunescript] Ollama fallback aborted (song changed) — dropping');
-                        return;
-                    }
-                    console.warn('[Tunescript] Ollama fallback also failed:', e3.message);
-                    console.log('[Tunescript] Falling back to offline romanization + fallback translation');
-                    showStatusBar('AI unavailable — trying offline romanization…', 'warn');
-                    isFallbackResult = true;
-                    const offlineResults = offlineTransliterate(rawLines.map(l => l.text));
-                    // Try MyMemory free translation for supported Indic languages
-                    let fbTranslations = rawLines.map(() => '');
-                    try {
-                        showStatusBar('Translating via MyMemory…', 'info');
-                        fbTranslations = await fallbackTranslate(rawLines.map(l => l.text), lang, signal);
-                    } catch (e4) {
-                        if (e4.name === 'AbortError') throw e4;
-                        console.warn('[Tunescript] MyMemory fallback failed:', e4.message);
-                    }
-                    aiResults = rawLines.map((_, i) => ({
-                        r: offlineResults[i]?.r ?? rawLines[i].text,
-                        t: fbTranslations[i] || '',
-                    }));
-                }
+                aiResults = await romanizeAndTranslate(plainLines, lang, settings.geminiApiKey, signal, onProgress, settings.geminiModel);
+            } catch (error) {
+                if (!isCurrent() || error.name === 'AbortError') return;
+                if (engine === 'gemini' && settings.geminiModel !== 'gemini-3.5-flash-lite' && error.code === 'output' && plainLines.length > 15) {
+                    aiResults = await romanizeAndTranslateChunked(plainLines, lang, settings.geminiApiKey, signal, 15, settings.geminiModel);
+                } else throw error;
             }
+        } else {
+            processingWarning = 'Add your Gemini API key in TuneScript for pronunciation and English meaning.';
         }
+    } catch (error) {
+        if (!isCurrent() || error.name === 'AbortError') return;
+        processingWarning = error.message || 'Translation unavailable. Showing source lyrics.';
+    }
+    if (!isCurrent()) return;
+    if (!aiResults) {
+        isFallbackResult = true;
+        usedEngine = 'source';
+        aiResults = plainLines.map(text => ({ r: text, t: '' }));
     }
 
-    // ── Step 7: Align + Merge timestamps + romanization + translation ─────────
-    // Gemini sometimes returns more/fewer entries than input lines.
-    // Correct the alignment before merging to prevent sync drift.
+    if (!isCurrent()) return;
+
+    // Merge validated output with immutable source timestamps and IDs.
     if (aiResults.length !== rawLines.length) {
-        console.warn(`[Tunescript] ⚠️ Line count mismatch: expected ${rawLines.length}, got ${aiResults.length} — realigning`);
-        aiResults = alignResults(rawLines.map(l => l.text), aiResults);
+        console.warn('[Tunescript] Processing returned incomplete lines');
+        throw Object.assign(new Error('Processing returned incomplete lyrics. Please try again.'), { code: 'output' });
     }
 
     const processed = rawLines.map((line, i) => ({
+        id: line.id,
+        type: line.type,
+        isEstimated: line.isEstimated,
         time: line.time,
         original: line.text,
-        romanized: aiResults[i]?.r ?? line.text,
+        romanized: line.romanizedSource ?? aiResults[i]?.r ?? line.text,
         translation: aiResults[i]?.t ?? '',
+        languages: validLyricLanguages(aiResults[i]?.languages),
     }));
-    console.log('[Tunescript] Merged processed lines:', processed.slice(0, 3), '…');
 
     // ── Step 8: Cache and re-render with full data ────────────────────────────
-    await setCached(cacheKey, processed, isFallbackResult);
+    const languages = collectLyricLanguages(aiResults);
+    const savedLanguages = savedTransform?.metadata?.languages ?? (reusableText ? cached.metadata?.languages : undefined);
+    const sourceLanguages = languages.length || aiResults.some(row => Array.isArray(row.languages)) ? languages : validLyricLanguages(savedLanguages ?? [lang]);
+    publishDetectedLanguages(sourceLanguages);
+    const metadata = { attribution: lrcResult?.attribution || 'Lyrics from the music platform', provider: lrcResult?.provider || 'native', providerId: lrcResult?.id || null, timingMode: isSynced ? 'synced' : rawLines.some(line => line.isEstimated) ? 'estimated' : 'unsynced', searchSummary: lrcResult?.searchSummary || '', engine: usedEngine, model: usedEngine === 'gemini' ? settings.geminiModel : null, language: lang, languages: sourceLanguages, complete: !isFallbackResult, transformKey, processingWarning };
+    if (lrcResult?.nativeSource) { metadata.nativeSource = lrcResult.nativeSource; metadata.nativeAttribution = lrcResult.nativeAttribution; }
+    if (transformKey && !isFallbackResult && !savedTransform && usedEngine === engine) await setCached(transformKey, aiResults, false, metadata);
+    if (!isCurrent()) return;
+    await setCached(cacheKey, processed, isFallbackResult, metadata);
+    if (!isCurrent()) return;
+    if (typeof recordDiagnostic === 'function') recordDiagnostic({ operation: 'selection', code: 'ok', platform, ...metadata });
     console.log('[Tunescript] Cached ✓');
     currentProcessedLines = processed;  // keep for live settings re-render
-    renderPanel(processed, settings, currentSongDuration);
+    renderPanel(processed, latestDisplaySettings(settings), currentSongDuration);
     startTimedSync(processed, { skipSettle: true, duration, songStartVideoTime });
-    hideStatusBar();
+    if (isFallbackResult || processingWarning) showStatusBar(processingWarning || 'Translation unavailable. Showing source lyrics.', 'warn');
+    else hideStatusBar();
     console.log('[Tunescript] Panel re-rendered with romanization + translation ✓');
 }

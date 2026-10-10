@@ -32,16 +32,15 @@ const YTM_SELECTORS = {
 };
 
 let lastYTMTrackKey = null;
+let ytmMetadataRetryPending = false;
 
-// ── Continuously hide native lyrics when tunescript is active ────────────────────
-// YTM's Polymer components can re-render at any time (tab switch, scroll,
-// internal state changes), resetting the display:none we set on the
-// description-shelf-renderer.  This observer catches those re-renders.
-// If our panel got removed (Polymer destroyed it during tab switch), re-inject it.
+// Restore the latest view when YTM replaces its player or lyrics content.
 
 /** Check whether the Lyrics tab is currently the active/selected tab. */
 function isLyricsTabActive() {
-    const allTabs = Array.from(document.querySelectorAll('tp-yt-paper-tab'));
+    const playerPage = document.querySelector('ytmusic-player-page');
+    if (!playerPage) return false;
+    const allTabs = Array.from(playerPage.querySelectorAll('tp-yt-paper-tab'));
     const activeIdx = allTabs.findIndex(t =>
         t.classList.contains('iron-selected') || t.getAttribute('aria-selected') === 'true'
     );
@@ -52,41 +51,52 @@ function isLyricsTabActive() {
     return activeTab?.textContent?.trim().toLowerCase() === 'lyrics';
 }
 
+function isYTMLyricsVisible() {
+    const page = document.querySelector('ytmusic-player-page');
+    if (!page || page.hidden || page.getAttribute('aria-hidden') === 'true' || !isLyricsTabActive()) return false;
+    const rect = page.getBoundingClientRect();
+    const style = getComputedStyle(page);
+    return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0 &&
+        rect.top < window.innerHeight && rect.left < window.innerWidth &&
+        style.display !== 'none' && style.visibility !== 'hidden';
+}
+
 let _reinjectTimer = null;
-const nativeLyricsObserver = new MutationObserver(() => {
-    // Only act when the Lyrics tab is active — don't touch RELATED or UP NEXT
-    if (!isLyricsTabActive()) return;
+function reconcileYTMLyrics() {
+    const panel = document.getElementById('tunescript-panel');
+    if (!isYTMLyricsVisible()) {
+        clearLyricsPanel();
+        return;
+    }
 
-    const panelExists = document.getElementById('tunescript-panel');
-    const nativeEls = document.querySelectorAll('ytmusic-description-shelf-renderer');
+    // A missing native shelf is normal for songs without platform lyrics.
+    // Restore loading/error views as well as completed lyrics, without an API call.
+    if (!panel || panel.childElementCount === 0) {
+        if (!restoreLyricsPanel()) restoreNativeLyricsElements();
+    } else {
+        injectPanel(panel);
+    }
+}
 
-    if (nativeEls.length === 0) return;
+function scheduleYTMLyricsRecovery() {
+    if (_reinjectTimer) return;
+    _reinjectTimer = setTimeout(() => {
+        _reinjectTimer = null;
+        reconcileYTMLyrics();
+    }, 150);
+}
 
-    nativeEls.forEach(el => {
-        if (el.style.display !== 'none') {
-            el.style.display = 'none';
-            console.log('[Tunescript] Re-hid native lyrics element (Polymer re-rendered)');
-        }
-    });
-
-    // Panel was removed during tab switch — re-render if we have data.
-    // Debounced: Polymer fires many mutations during loading; we coalesce them.
-    if (!panelExists && !_reinjectTimer) {
-        _reinjectTimer = setTimeout(() => {
-            _reinjectTimer = null;
-            // Re-check conditions after debounce — panel may have appeared
-            if (!document.getElementById('tunescript-panel') && isLyricsTabActive()) {
-                console.log('[Tunescript] Panel missing after tab switch — re-injecting');
-                if (typeof reRenderCurrentLyrics === 'function') {
-                    reRenderCurrentLyrics();
-                }
-            }
-        }, 300);
+const nativeLyricsObserver = new MutationObserver(mutations => {
+    if (mutations.some(mutation => mutation.type === 'childList' ||
+        mutation.target.matches('tp-yt-paper-tab, ytmusic-player-page, ytmusic-tab-renderer'))) {
+        scheduleYTMLyricsRecovery();
     }
 });
-// Observe the right sidebar area where tabs render
-const observeTarget = document.getElementById('tab-renderer') || document.body;
-nativeLyricsObserver.observe(observeTarget, { childList: true, subtree: true });
+// The body survives replacement of YTM's player/sidebar components.
+nativeLyricsObserver.observe(document.body, {
+    childList: true, subtree: true, attributes: true,
+    attributeFilter: ['aria-selected', 'selected', 'class', 'hidden', 'aria-hidden'],
+});
 
 // ── Lyrics tab click listener — re-inject panel when tab is revisited ─────────
 // YTM destroys the tab content DOM when switching away. When the user clicks
@@ -95,32 +105,7 @@ document.body.addEventListener('click', (e) => {
     const tab = e.target.closest('tp-yt-paper-tab');
     if (!tab) return;
 
-    const tabs = Array.from(tab.parentNode?.children || []).filter(c => c.tagName === 'TP-YT-PAPER-TAB');
-    const tabIndex = tabs.indexOf(tab);
-    const isLyrics = tabIndex === 1 || tab.textContent.trim().toLowerCase() === 'lyrics';
-
-    if (isLyrics) {
-        // Short delay so YTM renders the container first, then we re-inject
-        setTimeout(() => {
-            if (!document.getElementById('tunescript-panel')) {
-                console.log('[Tunescript] Lyrics tab clicked — re-injecting panel');
-                if (typeof reRenderCurrentLyrics === 'function') {
-                    reRenderCurrentLyrics();
-                }
-            }
-            // Also hide native lyrics in case they appeared
-            document.querySelectorAll('ytmusic-description-shelf-renderer').forEach(el => {
-                el.style.display = 'none';
-            });
-        }, 300);
-    } else {
-        // Switching AWAY from lyrics — remove panel so it doesn't bleed into other tabs
-        const panel = document.getElementById('tunescript-panel');
-        if (panel && panel.dataset.tier3 !== 'true') {
-            panel.remove();
-            console.log('[Tunescript] Switched away from Lyrics tab — removed panel');
-        }
-    }
+    scheduleYTMLyricsRecovery();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,8 +115,10 @@ document.body.addEventListener('click', (e) => {
  * Logs which one succeeded (or none).
  */
 function findLyricsTab() {
+    const page = document.querySelector('ytmusic-player-page');
+    if (!page) return null;
     for (const sel of YTM_SELECTORS.lyricsTabCandidates) {
-        const el = document.querySelector(sel);
+        const el = page.querySelector(sel);
         if (el) {
             console.log(`[Tunescript] Lyrics tab found via selector: "${sel}"`);
             _ensureTabEnabled(el);
@@ -139,7 +126,7 @@ function findLyricsTab() {
         }
     }
     // Fallback: search all visible tab-like elements for text "Lyrics"
-    const allTabs = Array.from(document.querySelectorAll('tp-yt-paper-tab, ytmusic-tab-renderer'));
+    const allTabs = Array.from(page.querySelectorAll('tp-yt-paper-tab, ytmusic-tab-renderer'));
     const byText = allTabs.find(el => el.textContent.trim().toLowerCase() === 'lyrics');
     if (byText) {
         console.log('[Tunescript] Lyrics tab found via text content search');
@@ -163,8 +150,10 @@ function _ensureTabEnabled(tab) {
  * Logs which one matched.
  */
 function findLyricsText() {
+    const page = document.querySelector('ytmusic-player-page');
+    if (!page) return null;
     for (const sel of YTM_SELECTORS.lyricsTextCandidates) {
-        const el = document.querySelector(sel);
+        const el = page.querySelector(sel);
         if (el) {
             console.log(`[Tunescript] Lyrics text element found via selector: "${sel}"`);
             return el;
@@ -201,9 +190,10 @@ async function waitForDescriptionText(maxWaitMs = 3000) {
  * @param {number} maxWaitMs
  * @returns {Promise<HTMLElement|null>}
  */
-async function waitForLyricsContainer(maxWaitMs = 3000) {
+async function waitForLyricsContainer(maxWaitMs = 3000, signal = null) {
     const deadline = Date.now() + maxWaitMs;
     while (Date.now() < deadline) {
+        throwIfSongRequestAborted(signal);
         // Best case: the exact lyrics text element
         const lyricsText = findLyricsText();
         if (lyricsText) {
@@ -232,12 +222,16 @@ async function waitForLyricsContainer(maxWaitMs = 3000) {
 
 /**
  * Extract the track's total duration in seconds from YTM.
- * Strategy 1: Parse the player bar time display "M:SS / M:SS" (total is after /).
- *             This is the ground-truth song duration (NOT cumulative video duration).
- * Strategy 2: Try the progress slider's aria-valuemax.
- * Strategy 3: Fallback to <video> element's .duration property only if UI elements aren't ready.
+ * Prefer a fresh, recording-bound clock. During ads the UI and video element
+ * can describe the advertisement rather than the song; defer duration capture.
+ * When the bridge is unavailable, use the player bar or progress slider.
  */
 function _getYTMDuration(attempt = 0) {
+    const mediaId = getVideoId(location.href);
+    const native = typeof nativeClockState !== 'undefined' && nativeClockState?.receivedAt > Date.now() - 1500 ? nativeClockState : null;
+    if (document.getElementById('movie_player')?.classList.contains('ad-showing') || native?.ad) return 0;
+    if (native?.mediaId && native.mediaId !== mediaId) return 0;
+    if (native?.mediaId === mediaId && Number.isFinite(native.duration) && native.duration > 0) return native.duration;
     // Strategy 1: parse "1:33 / 5:28" from the time-info element
     const timeInfo = document.querySelector('.time-info.ytmusic-player-bar');
     if (timeInfo) {
@@ -269,13 +263,6 @@ function _getYTMDuration(attempt = 0) {
         }
     }
 
-    // Strategy 3 (Fallback): <video> element's .duration property
-    const video = getMainVideo();
-    if (video && video.duration && isFinite(video.duration) && video.duration > 0) {
-        console.log(`[Tunescript] _getYTMDuration: fallback to video.duration (${video.duration.toFixed(1)}s)`);
-        return video.duration;
-    }
-
     return 0;
 }
 
@@ -293,12 +280,18 @@ function _parseTimeString(str) {
  * Poll for track info with retries — the YTM player bar can take 1-3s to
  * fully render after SPA navigation, so a single delay isn't reliable.
  */
-async function waitForYTMTrackInfo(maxWaitMs = 10000, intervalMs = 300) {
+async function waitForYTMTrackInfo(maxWaitMs = 10000, intervalMs = 300, signal = null) {
     const deadline = Date.now() + maxWaitMs;
     let attempt = 0;
     while (Date.now() < deadline) {
+        throwIfSongRequestAborted(signal);
         attempt++;
         const title = document.querySelector(YTM_SELECTORS.title)?.textContent?.trim();
+        if (typeof readPlaybackClock === 'function') readPlaybackClock();
+        if (typeof nativeClockState !== 'undefined' && nativeClockState?.mediaId && nativeClockState.receivedAt > Date.now() - 1500 && nativeClockState.mediaId !== getVideoId(location.href)) {
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+            continue;
+        }
         // Extract artist from the full byline text ("Artist • Album • Year")
         // Using the first <a> tag alone can grab the album link during transition
         // On mobile or some songs, the byline may not have • separators —
@@ -309,7 +302,9 @@ async function waitForYTMTrackInfo(maxWaitMs = 10000, intervalMs = 300) {
         const duration = _getYTMDuration(attempt);
         if (title && artist && (duration > 0 || attempt >= 6)) {
             console.log(`[Tunescript] Track info ready after ${attempt} attempt(s): "${title}" by "${artist}" (${duration.toFixed(1)}s)`);
-            return { title, artist, duration };
+            const yearPart = bylineParts.find(part => /^\d{4}$/.test(part));
+            const album = bylineParts.length > 1 && !/^\d{4}$/.test(bylineParts[1]) ? bylineParts[1] : '';
+            return { title, artist, duration, artists: typeof creditedArtists === 'function' ? creditedArtists(artist) : [artist], album, year: yearPart ? Number(yearPart) : null, mediaId: getVideoId(location.href), mode: document.querySelector('ytmusic-player')?.getAttribute('playback-mode') || 'unknown' };
         }
         console.log(`[Tunescript] waitForYTMTrackInfo attempt ${attempt}: title="${title}" artist="${bylineParts.join(' • ')}" duration=${duration}s — retrying in ${intervalMs}ms`);
         await new Promise(r => setTimeout(r, intervalMs));
@@ -319,7 +314,23 @@ async function waitForYTMTrackInfo(maxWaitMs = 10000, intervalMs = 300) {
 }
 
 let lastDomLyricsText = '';
-let isYTMForceReload = false;
+let lastDomLyricsMediaId = '';
+
+function readNativeYTMLyrics(element) {
+    if (!element) return '';
+    const shelf = element.closest?.('ytmusic-description-shelf-renderer');
+    const hiddenByExtension = shelf && typeof hiddenNativeLyrics !== 'undefined' && hiddenNativeLyrics.has(shelf);
+    if (!hiddenByExtension) return (element.innerText || '').trim();
+    // Our overlay hides the original shelf, but it remains a usable source.
+    // Preserve BR/block boundaries rather than merging hidden textContent.
+    const read = node => {
+        if (node.nodeType === 3) return node.textContent || '';
+        if (node.nodeName === 'BR') return '\n';
+        const text = Array.from(node.childNodes || []).map(read).join('');
+        return /^(P|DIV|LI)$/.test(node.nodeName) ? text + '\n' : text;
+    };
+    return read(element).trim();
+}
 
 /**
  * DOM lyrics scrape — opens the Lyrics tab first if it's not already shown,
@@ -327,10 +338,20 @@ let isYTMForceReload = false;
  * YTM can sometimes still show the previous song's lyrics for a second or two.
  * @returns {Promise<string[]>}
  */
-async function getDomLyricsYTM() {
+async function getDomLyricsYTM({ signal = null, force = false } = {}) {
+    const page = document.querySelector('ytmusic-player-page');
+    const tabs = Array.from(page?.querySelectorAll('tp-yt-paper-tab') || []);
+    const originalTab = tabs.find(tab => tab.classList.contains('iron-selected') || tab.getAttribute('aria-selected') === 'true');
+    try { return await scrapeNativeLyricsYTM({ signal, force }); }
+    finally {
+        if (!signal?.aborted && originalTab && !originalTab.textContent.trim().toLowerCase().includes('lyrics') && isLyricsTabActive()) originalTab.click();
+    }
+}
+async function scrapeNativeLyricsYTM({ signal = null, force = false } = {}) {
+    throwIfSongRequestAborted(signal);
     let el = findLyricsText();
     // If not open, click the tab to force YTM to render it
-    if (!el || el.innerText.trim().length === 0) {
+    if (!readNativeYTMLyrics(el)) {
         const tab = findLyricsTab();
         if (tab) tab.click();
     }
@@ -340,15 +361,17 @@ async function getDomLyricsYTM() {
     const deadline = Date.now() + maxWait;
 
     while (Date.now() < deadline) {
+        throwIfSongRequestAborted(signal);
         el = findLyricsText();
-        if (el && el.innerText.trim().length > 0) {
-            const currentText = el.innerText.trim();
+        const currentText = readNativeYTMLyrics(el);
+        if (currentText) {
 
             // Stale check: if it's exactly the previous song's lyrics, keep waiting
-            if (!isYTMForceReload && currentText === lastDomLyricsText) {
+            if (!force && getVideoId(location.href) !== lastDomLyricsMediaId && currentText === lastDomLyricsText) {
                 // Wait for YTM to clear/update it
             } else {
                 lastDomLyricsText = currentText;
+                lastDomLyricsMediaId = getVideoId(location.href);
                 lines = currentText.split('\n').map(l => l.trim()).filter(Boolean);
                 console.log(`[Tunescript] DOM lyrics scraped: ${lines.length} lines`);
                 return lines;
@@ -368,118 +391,140 @@ async function getDomLyricsYTM() {
  * Core handler — called on URL change or forced re-trigger.
  * @param {boolean} force - Skip the duplicate-song check (e.g. after API key added)
  */
-async function onYTMSongChange(force = false) {
-    console.log(`[Tunescript] onYTMSongChange triggered${force ? ' (forced)' : ''}, polling for track info…`);
-    isYTMForceReload = force;
+async function onYTMSongChange(force = false, retry = false) {
+    const mediaId = getVideoId(location.href);
+    if (!force && !retry && mediaId && mediaId === lastYTMTrackKey) return;
 
-    const info = await waitForYTMTrackInfo();
-    if (!info) return;
-
-    if (force) {
+    const request = beginSongRequest();
+    ytmMetadataRetryPending = false;
+    lastYTMTrackKey = mediaId || null;
+    showLoadingPanel();
+    try {
+        await prepareYTMSongChange(force, request);
+    } catch (error) {
+        if (!request.isCurrent() || error.name === 'AbortError') return;
         lastYTMTrackKey = null;
-        lastDomLyricsText = '';
-        const key = makeCacheKey('ytmusic', info.title, info.artist);
-        await clearSongCache(key);
+        console.error('[Tunescript] YTM song preparation failed:', error);
+        showErrorPanel('Unable to load lyrics for this song. Please try again.');
     }
+}
 
-    const key = `${info.title}|${info.artist}`;
-    if (!force && key === lastYTMTrackKey) {
-        console.log('[Tunescript] Same track as before — skipping');
+async function prepareYTMSongChange(force, request) {
+    console.log(`[Tunescript] onYTMSongChange triggered${force ? ' (forced)' : ''}, polling for track info…`);
+
+    const info = await waitForYTMTrackInfo(10000, 300, request.signal);
+    if (!request.isCurrent()) return;
+    if (!info) {
+        lastYTMTrackKey = null;
+        ytmMetadataRetryPending = true;
+        showErrorPanel('Song details are not ready yet. Please try again.');
         return;
     }
-    lastYTMTrackKey = key;
-    console.log(`[Tunescript] 🎵 New track: ${key}`);
 
-    const settings = await getSettings();
-    console.log('[Tunescript] Settings loaded (autoOpenLyrics:', settings.autoOpenLyrics, ')');
+    const settings = typeof getTrackSettings === 'function' ? await getTrackSettings({ ...info, platform: 'ytmusic' }) : await getSettings();
+    if (!request.isCurrent()) return;
 
-    // Remember which tab is currently active so we can restore it if needed.
-    const allTabs = Array.from(document.querySelectorAll('tp-yt-paper-tab, ytmusic-tab-renderer'));
-    const originalTab = allTabs.find(t => t.classList.contains('iron-selected') || t.getAttribute('aria-selected') === 'true');
-
-    // Always open the Lyrics tab so the native container exists for injection.
-    // Without this, injectPanel() can't find the lyrics DOM.
-    const tab = findLyricsTab();
-    if (tab) {
-        tab.click();
-        console.log('[Tunescript] Opened Lyrics tab for injection target');
-        // Wait for the description-shelf-renderer to appear in the DOM.
-        // The inner yt-formatted-string can take 1-2s to render after tab click.
-        await waitForLyricsContainer(3000);
+    if (force) {
+        lastDomLyricsText = '';
+        const key = makeCacheKey('ytmusic', info.title, info.artist, { ...info, engine: settings.engine, model: settings.geminiModel, language: settings.languageOverride, estimatedScrolling: settings.estimatedScrolling });
+        await clearSongCache(key);
+        if (!request.isCurrent()) return;
     }
 
-    // Re-click the Lyrics tab right before the pipeline.
-    // During the 3s waitForLyricsContainer timeout, YTM may have switched
-    // back to UP NEXT. This ensures the Lyrics tab is active when
-    // injectPanel() runs inside handleSongChange.
-    const lyricsTabFinal = findLyricsTab();
-    if (lyricsTabFinal) {
-        lyricsTabFinal.click();
-        console.log('[Tunescript] Re-activated Lyrics tab before pipeline');
+    console.log(`[Tunescript] 🎵 New track: ${info.title}|${info.artist}`);
+
+    console.log('[Tunescript] Settings loaded (autoOpenLyrics:', settings.autoOpenLyrics, ')');
+
+    // Provider/cache work can finish while Lyrics is closed. Only open on
+    // song start when requested; a native scrape temporarily opens its own slot.
+    if (settings.autoOpenLyrics) {
+        const tab = findLyricsTab();
+        if (tab) {
+            tab.click();
+            await waitForLyricsContainer(3000, request.signal);
+            if (!request.isCurrent()) return;
+            findLyricsTab()?.click();
+        }
+        setTimeout(() => {
+            if (request.isCurrent()) findLyricsTab()?.click();
+        }, 500);
     }
 
     await handleSongChange({
         ...info,
         platform: 'ytmusic',
-        getDomLyrics: getDomLyricsYTM,  // now async — see main.js note
+        request,
+        getDomLyrics: () => settings.autoOpenLyrics ? scrapeNativeLyricsYTM({ signal: request.signal, force }) : getDomLyricsYTM({ signal: request.signal, force }),
     });
+    if (!request.isCurrent()) return;
 
-    // After pipeline: handle tab state based on autoOpenLyrics setting.
-    if (settings.autoOpenLyrics) {
-        // Ensure Lyrics tab stays selected — YTM may try to switch back.
-        // A short delay lets YTM finish its own internal navigation first.
-        setTimeout(() => {
-            const lt = findLyricsTab();
-            if (lt) {
-                lt.click();
-                console.log('[Tunescript] autoOpenLyrics: ensured Lyrics tab stays active');
-            }
-        }, 500);
-    } else if (originalTab) {
-        // Restore the tab the user was on before we switched for injection.
-        originalTab.click();
-        console.log('[Tunescript] Restored original tab (autoOpenLyrics is off)');
-    }
 }
 
 // ── Watch URL changes (SPA navigation) ───────────────────────────────────────
-// Only trigger on actual song changes (video ID change), NOT on Song/Video
-// toggle or minor parameter changes.
+// A changed video ID starts a new session, including Song/Video versions
+// with identical displayed titles. Other URL parameters do not trigger work.
 function getVideoId(url) {
     try { return new URL(url).searchParams.get('v') || ''; }
     catch { return ''; }
 }
 
 let ytmCurrentVideoId = getVideoId(location.href);
+let ytmCurrentMode = null;
 console.log('[Tunescript] Starting URL observer. Current URL:', location.href);
 
-const ytmNavObserver = new MutationObserver(() => {
+function checkYTMNavigation() {
     const newId = getVideoId(location.href);
+    const mode = document.querySelector('ytmusic-player')?.getAttribute('playback-mode') || null;
     if (newId && newId !== ytmCurrentVideoId) {
         console.log(`[Tunescript] Video ID changed: ${ytmCurrentVideoId} → ${newId}`);
         ytmCurrentVideoId = newId;
+        ytmCurrentMode = mode;
         onYTMSongChange();
+        return;
     }
-});
+    if (mode && ytmCurrentMode && mode !== ytmCurrentMode) {
+        ytmCurrentMode = mode;
+        onYTMSongChange(false, true);
+        return;
+    }
+    if (mode) ytmCurrentMode = mode;
+    // Metadata can arrive during an ad or before the player finishes switching.
+    // Recover the lookup once its recording duration is known, without clearing
+    // completed transformations or treating an ad's duration as a new song.
+    if (currentTrackInfo?.platform === 'ytmusic' && currentTrackInfo.mediaId === newId) {
+        if (typeof readPlaybackClock === 'function') readPlaybackClock();
+        const duration = _getYTMDuration(5);
+        if (duration > 0 && Math.abs(duration - (currentTrackInfo.duration || 0)) > 1) {
+            onYTMSongChange(false, true);
+            return;
+        }
+    }
+    if (ytmMetadataRetryPending &&
+        document.querySelector(YTM_SELECTORS.title)?.textContent?.trim() &&
+        document.querySelector('.byline.ytmusic-player-bar')?.textContent?.trim()) {
+        onYTMSongChange(false, true);
+    }
+}
+
+const ytmNavObserver = new MutationObserver(checkYTMNavigation);
 ytmNavObserver.observe(document.body, { childList: true, subtree: true });
+
+// Catch missed navigation/mount events without re-running completed AI requests.
+setInterval(() => {
+    checkYTMNavigation();
+    reconcileYTMLyrics();
+}, 1000);
 
 // ── Re-trigger when API key is saved from the popup or force reload requested ──
 chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && changes.geminiApiKey) {
-        const newKey = changes.geminiApiKey.newValue;
-        const oldKey = changes.geminiApiKey.oldValue || '';
-        if (newKey && newKey !== oldKey) {
-            console.log('[Tunescript] API key updated — forcing pipeline re-run for current song');
-            lastYTMTrackKey = null;
-            lastDomLyricsText = '';
-            if (typeof showLoadingPanel === 'function') showLoadingPanel();
-            onYTMSongChange(true);
-        }
+    if (area === 'sync' && ['geminiApiKey', 'geminiModel', 'engine', 'languageOverride', 'estimatedScrolling'].some(key => key in changes)) {
+        // A credential removal also cancels old work. Preserve completed
+        // transformations: saving a key is not a request to spend quota again.
+        onYTMSongChange(false, true);
     } else if (area === 'local' && changes.forceSongReload) {
+        const target = changes.forceSongReload.newValue;
+        if (typeof target === 'object' && (target.platform !== 'ytmusic' || (target.mediaId && target.mediaId !== getVideoId(location.href)))) return;
         console.log('[Tunescript] Force song reload requested via popup button');
-        lastYTMTrackKey = null;
-        lastDomLyricsText = '';
-        if (typeof showLoadingPanel === 'function') showLoadingPanel();
         onYTMSongChange(true);
     }
 });

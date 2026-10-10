@@ -1,69 +1,41 @@
-// shared/cache.js
-// chrome.storage.local helpers for caching romanized lyrics per song.
-// All cache keys are prefixed with "tunescript_" so clearAllCache() is selective.
-
-console.log('[Tunescript] cache.js loaded ✓');
-
-// Bump this whenever the data schema or processing pipeline changes to
-// automatically invalidate stale cached entries.
-const CACHE_VERSION = 3;
-
+const CACHE_VERSION = 4;
+const CACHE_PREFIX = 'tunescript_cache_';
+const CACHE_MAX_ENTRIES = 200;
+function storageGet(keys) { return new Promise(resolve => chrome.storage.local.get(keys, resolve)); }
+function storageSet(value) { return new Promise(resolve => chrome.storage.local.set(value, resolve)); }
+function storageRemove(keys) { return new Promise(resolve => chrome.storage.local.remove(keys, resolve)); }
 async function getCached(key, allowFallback = true) {
-    return new Promise(resolve => {
-        chrome.storage.local.get(key, r => {
-            const hit = r[key] || null;
-            if (hit) {
-                // Reject entries from older cache versions
-                if (hit.v !== CACHE_VERSION) {
-                    console.log(`[Tunescript] Cache GET "${key}" → STALE (v${hit.v ?? 1} < v${CACHE_VERSION}) — treating as MISS`);
-                    chrome.storage.local.remove(key);
-                    resolve(null);
-                    return;
-                }
-                // Check if this was an offline fallback entry (flagged or contains || delimiter artifacts)
-                const isFallbackEntry = hit.isFallback || (hit.data && hit.data.some(d => d.translation && d.translation.includes('||')));
-                if (isFallbackEntry && !allowFallback) {
-                    console.log(`[Tunescript] Cache GET "${key}" → FALLBACK entry found, but AI is now active — upgrading (treating as MISS)`);
-                    chrome.storage.local.remove(key);
-                    resolve(null);
-                    return;
-                }
-                const age = Math.round((Date.now() - hit.ts) / 1000);
-                console.log(`[Tunescript] Cache GET "${key}" → HIT (${age}s old, v${CACHE_VERSION}${hit.isFallback ? ', fallback' : ''})`);
-            } else {
-                console.log(`[Tunescript] Cache GET "${key}" → MISS`);
-            }
-            resolve(hit);
-        });
-    });
+    const hit = (await storageGet(key))[key];
+    if (!hit || hit.v !== CACHE_VERSION || !Array.isArray(hit.data) || !hit.data.length) return null;
+    if (Date.now() - hit.ts > (hit.isFallback ? 7 : 90) * 86400000) return null;
+    if (hit.isFallback && !allowFallback) return null;
+    return hit;
 }
-
-async function setCached(key, data, isFallback = false) {
-    return new Promise(resolve => {
-        chrome.storage.local.set({ [key]: { data, ts: Date.now(), v: CACHE_VERSION, isFallback } }, () => {
-            console.log(`[Tunescript] Cache SET "${key}" — ${data.length} lines stored (v${CACHE_VERSION}${isFallback ? ', fallback' : ''})`);
-            resolve();
-        });
-    });
+async function setCached(key, data, isFallback = false, metadata = {}) {
+    if (!Array.isArray(data) || !data.length) return;
+    await storageSet({ [key]: { data, ts: Date.now(), v: CACHE_VERSION, isFallback, metadata } });
+    const all = await storageGet(null);
+    const entries = Object.entries(all).filter(([name]) => name.startsWith(CACHE_PREFIX)).sort((a, b) => (b[1]?.ts || 0) - (a[1]?.ts || 0));
+    const excess = entries.slice(CACHE_MAX_ENTRIES).map(([name]) => name);
+    if (excess.length) await storageRemove(excess);
 }
-
+function makeCacheKey(platform, title, artist, details = {}) {
+    const identity = [platform, details.mediaId || '', title.normalize('NFKC'), artist.normalize('NFKC'), Math.round(details.duration || 0), details.mode || '', details.engine || 'gemini', details.model || 'gemini-2.5-flash', details.language || 'auto', !!details.estimatedScrolling];
+    return CACHE_PREFIX + 'recording_' + encodeURIComponent(JSON.stringify(identity));
+}
+async function transformationCacheKey(lines, language, settings) {
+    const profile = [settings.geminiModel, 'phonetic-v1'];
+    const text = JSON.stringify([lines.map(line => line.text), language, settings.engine, ...profile, CACHE_VERSION]);
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return CACHE_PREFIX + 'text_' + Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
 async function clearSongCache(key) {
     if (!key) return;
-    console.log(`[Tunescript] Clearing single song cache: "${key}"`);
-    const legacyKey = key.replace('tunescript_', 'akshar_');
-    return new Promise(resolve => chrome.storage.local.remove([key, legacyKey], resolve));
+    const entry = (await storageGet(key))[key];
+    await storageRemove([key, ...(entry?.metadata?.transformKey ? [entry.metadata.transformKey] : [])]);
 }
-
 async function clearAllCache() {
-    const all = await new Promise(resolve => chrome.storage.local.get(null, resolve));
-    const keys = Object.keys(all).filter(k => k.startsWith('tunescript_') || k.startsWith('akshar_'));
-    console.log(`[Tunescript] Clearing ${keys.length} cache entries:`, keys);
-    return new Promise(resolve => chrome.storage.local.remove(keys, resolve));
-}
-
-/**
- * Build a stable, lowercase cache key unique to each platform + song.
- */
-function makeCacheKey(platform, title, artist) {
-    return `tunescript_${platform}_${title}_${artist}`.replace(/\s+/g, '_').toLowerCase();
+    const all = await storageGet(null);
+    // Only lyric entries: quota cooldowns and other extension state must survive.
+    await storageRemove(Object.keys(all).filter(key => key.startsWith(CACHE_PREFIX) || key.startsWith('akshar_')));
 }

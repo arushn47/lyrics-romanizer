@@ -1,251 +1,111 @@
-// shared/lrclib.js
-// Fetches synced (LRC) or plain lyrics from LRCLIB.net — free, no auth.
-// LRCLIB is the single source of truth for BOTH lyrics text AND timestamps.
-// Duration is passed to help the API pick the right version (live, remix, etc.).
-
-console.log('[Tunescript] lrclib.js loaded ✓');
-
-/**
- * Fetch lyrics from LRCLIB.
- *
- * @param {string} title    - Song title.
- * @param {string} artist   - Artist name.
- * @param {number} duration - Track duration in seconds (0 = omit param).
- * @param {AbortSignal|null} signal - AbortController signal for cancellation.
- * @returns {Promise<{synced: boolean, lines: Array<{time: number|null, text: string}>}|null>}
- *   Returns null on network error, abort, or when LRCLIB has no entry.
- */
-async function fetchLRCLIB(title, artist, duration = 0, signal = null) {
-    // ── Attempt 1: Exact-match with duration ─────────────────────────────────
-    if (duration) {
-        const result = await _lrclibGet(title, artist, duration, signal);
-        if (result) return result;
-        // Duration mismatch is the most common cause of 404.
-        // Retry without duration before falling back to search.
-        console.log('[Tunescript] LRCLIB: retrying without duration…');
-        const resultNoDur = await _lrclibGet(title, artist, 0, signal);
-        if (resultNoDur) return resultNoDur;
-    } else {
-        const result = await _lrclibGet(title, artist, 0, signal);
-        if (result) return result;
-    }
-
-    // ── Attempt 3: Search endpoint (fuzzy) ───────────────────────────────────
-    console.log('[Tunescript] LRCLIB: exact match failed — trying search endpoint…');
-    return _lrclibSearch(title, artist, duration, signal);
+function parseLRCLIBCandidate(data) {
+    if (!data || typeof data !== 'object' || data.instrumental === true) return null;
+    const hasSungLines = lines => cleanLyricLines(lines, { title: data.trackName || '' }).lines.some(line => line.type === 'lyric' && line.text.trim());
+    let lines = parseLRC(data.syncedLyrics || '');
+    let synced = validLyricTimeline(lines, Number(data.duration) || 0) && hasSungLines(lines);
+    if (!synced) lines = typeof data.plainLyrics === 'string' ? data.plainLyrics.split(/\r?\n/).map(text => ({ time: null, text })) : [];
+    if (!hasSungLines(lines)) return null;
+    const plainLines = typeof data.plainLyrics === 'string' ? data.plainLyrics.split(/\r?\n/).map(text => ({ time: null, text })) : [];
+    return {
+        provider: 'lrclib', id: String(data.id), title: data.trackName || '', artist: data.artistName || '',
+        album: data.albumName || '', year: null, duration: Number(data.duration) || 0,
+        synced, timingMode: synced ? 'synced' : 'unsynced', lines, retrievedAt: Date.now(),
+        attribution: 'Lyrics from LRCLIB', sourceUrl: 'https://lrclib.net',
+        ...(synced && typeof hasNativeIndicLyrics === 'function' && hasNativeIndicLyrics(plainLines) ? { nativePlainLines: plainLines } : {}),
+    };
 }
-
-/**
- * Internal: exact-match GET /api/get.
- */
-async function _lrclibGet(title, artist, duration, signal) {
-    const params = new URLSearchParams({
-        track_name: title,
-        artist_name: artist,
+async function lrclibRequest(endpoint, params, signal) {
+    try { return await backgroundRequest('lrclib', { endpoint, params }, signal); }
+    catch (error) { if (error.code === 'not-found') return null; throw error; }
+}
+function lrclibSearchPlan(track) {
+    const title = recordingTitle(track.title);
+    if (!title) return [];
+    // Send the artist's spelling to the catalog, not the matching fingerprint.
+    // Names such as KR$NA lose searchable characters when normalized.
+    // Platform adapters may already supply normalized matching identities in
+    // track.artists. Prefer the original byline, then add any remaining credits.
+    const rawArtists = [track.artist, ...(track.artists || [])], creditIdentities = new Set();
+    const credits = rawArtists.flatMap(value => String(value || '').split(/\s*(?:,|&|;|\bfeat\.?|\bft\.?|\bfeaturing\b)\s*/i)).map(value => value.trim()).filter(value => {
+        const identity = artistIdentity(value);
+        if (!identity || creditIdentities.has(identity)) return false;
+        creditIdentities.add(identity); return true;
     });
-    if (duration) params.set('duration', Math.round(duration));
-
-    const url = `https://lrclib.net/api/get?${params}`;
-    console.log(`[Tunescript] LRCLIB fetch → ${url}`);
-
-    try {
-        const res = await fetch(url, { signal });
-        console.log(`[Tunescript] LRCLIB response: ${res.status} ${res.statusText}`);
-
-        if (!res.ok) {
-            console.log('[Tunescript] LRCLIB: non-OK response — no lyrics found');
-            return null;
-        }
-        return _parseLrclibResponse(await res.json());
-    } catch (e) {
-        if (e.name === 'AbortError') {
-            console.log('[Tunescript] LRCLIB fetch aborted (song changed)');
-            return null;
-        }
-        console.error('[Tunescript] LRCLIB fetch failed:', e);
-        return null;
+    const queries = [], seen = new Set();
+    // A single credited artist usually finds editions with incomplete catalog
+    // credits; combined platform credits can exclude all of those editions.
+    for (const artist of [...credits.slice(0, 2), track.artist]) {
+        if (!artist) continue;
+        const identity = artistIdentity(artist);
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        queries.push({ track_name: title, artist_name: artist });
     }
+    queries.push({ track_name: title });
+    return queries;
 }
-
-/**
- * Internal: fuzzy search via GET /api/search.
- * Returns the best match (first result with lyrics).
- */
-async function _lrclibSearch(title, artist, duration, signal) {
-    // Attempt 1: Title + Artist
-    let parsed = await _doSearchRequest(`${title} ${artist}`, duration, signal, artist);
-    if (parsed) return parsed;
-
-    // Attempt 2: Just Title (fallback for YTM Indian music where movie name is artist)
-    if (artist) {
-        console.log('[Tunescript] LRCLIB search: title+artist failed, trying just title…');
-        parsed = await _doSearchRequest(title, duration, signal, artist);
-        if (parsed) return parsed;
-    }
-
-    return null;
-}
-
-/**
- * Execute the actual search request and parse the first valid result.
- * @param {string} query - Search query string.
- * @param {number} duration - Track duration for filtering.
- * @param {AbortSignal|null} signal
- * @param {string} [artist] - Artist name to verify results against.
- */
-async function _doSearchRequest(query, duration, signal, artist = '') {
-    const params = new URLSearchParams({ q: query });
-    const url = `https://lrclib.net/api/search?${params}`;
-    console.log(`[Tunescript] LRCLIB search → ${url}`);
-
+async function findLRCLIBCandidates(track, signal, includeReport = false, options = {}) {
+    const candidates = new Map();
+    let preferredTimedId = null;
+    let status = 'complete';
+    const finish = () => includeReport ? { candidates: [...candidates.values()], status, ...(preferredTimedId ? { preferredTimedId } : {}) } : [...candidates.values()];
     try {
-        const res = await fetch(url, { signal });
-        console.log(`[Tunescript] LRCLIB search response: ${res.status} ${res.statusText}`);
-
-        if (!res.ok) return null;
-
-        const results = await res.json();
-        if (!Array.isArray(results) || results.length === 0) {
-            console.log('[Tunescript] LRCLIB search: no results');
-            return null;
+        const params = { track_name: track.title, artist_name: track.artist };
+        if (track.album) params.album_name = track.album;
+        // The get API rejects durations outside 1–3600 seconds. Omit unknown
+        // or out-of-range values; candidate acceptance still checks duration.
+        if (Number.isFinite(track.duration) && track.duration >= 1 && track.duration <= 3600) params.duration = Math.round(track.duration);
+        let exact;
+        try {
+            exact = parseLRCLIBCandidate(await lrclibRequest('get', params, signal));
+        } catch (error) {
+            if (signal?.aborted || error.name === 'AbortError') throw new DOMException('Song changed', 'AbortError');
+            // A failed metadata endpoint does not prove search is unavailable.
+            // Try the primary-artist search once; its failure stops the plan.
+            // Never bypass account/access errors or a long provider cooldown.
+            if (error.code && !['timeout', 'network', 'service'].includes(error.code)) throw error;
+            const delay = Math.max(0, (Number(error.retryAt) || 0) - Date.now());
+            if (delay > 2000) throw error;
+            if (delay) await waitForRequestSettle(delay, signal);
         }
-
-        // ── Artist matching helper ───────────────────────────────────────
-        const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const artistNorm = artist ? norm(artist) : '';
-        const artistWords = artist ? artist.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean) : [];
-
-        function artistMatches(entryArtist) {
-            if (!artistNorm || !entryArtist) return false;
-            const entryNorm = norm(entryArtist);
-            if (entryNorm === artistNorm) return true;
-            const entryLower = entryArtist.toLowerCase();
-            return artistWords.some(w => w.length > 2 && entryLower.includes(w));
+        if (exact) candidates.set(exact.id, exact);
+        // A correct plain-text hit is still insufficient for sing-along timing.
+        if (exact?.synced && scoreLyricCandidate(track, exact).accepted) {
+            preferredTimedId = exact.id;
+            if (signal?.aborted) throw new DOMException('Song changed', 'AbortError');
+            options.onSynced?.(exact);
+            if (!options.preferNativeForTranslation || !await needsNativeTranslation(exact, signal) || alignNativeLyricText(exact, { ...exact, lines: exact.nativePlainLines || [] }, track)) return finish();
         }
-
-        const artistMatched = artist ? results.filter(e => artistMatches(e.artistName)) : results;
-        const candidates = artistMatched.length > 0 ? artistMatched : [];
-        if (artist && artistMatched.length === 0) {
-            console.log(`[Tunescript] LRCLIB search: no results matched artist "${artist}" — skipping (wrong song)`);
-            return null;
-        } else if (artist) {
-            console.log(`[Tunescript] LRCLIB search: ${artistMatched.length}/${results.length} results matched artist`);
-        }
-
-        // Prefer duration-matched candidates, but keep the full pool as a
-        // backup if none pass the tolerance check.
-        let pool = candidates;
-        if (duration && duration > 0) {
-            const TOLERANCE = 15;
-            const durationMatches = candidates.filter(e => e.duration && Math.abs(e.duration - duration) <= TOLERANCE);
-            if (durationMatches.length > 0) {
-                console.log(`[Tunescript] LRCLIB search: ${durationMatches.length} results matched duration ~${Math.round(duration)}s (±${TOLERANCE}s)`);
-                pool = durationMatches;
-            } else {
-                console.log('[Tunescript] LRCLIB search: no duration-matched results — trying full candidate pool');
+        for (const query of lrclibSearchPlan(track)) {
+            if (signal?.aborted) throw new DOMException('Song changed', 'AbortError');
+            const response = await lrclibRequest('search', query, signal);
+            if (Array.isArray(response) && response.length >= 20) status = 'limited';
+            if (Array.isArray(response)) for (const row of response) {
+                const candidate = parseLRCLIBCandidate(row);
+                if (candidate) candidates.set(candidate.id, candidate);
             }
+            // No reason to issue broader searches after the returned set has
+            // a verified, unambiguous timed edition of the current recording.
+            const decision = chooseLyricCandidate(track, [...candidates.values()]);
+            if (decision.selected?.synced && !preferredTimedId) {
+                preferredTimedId = decision.selected.id;
+                options.onSynced?.(decision.selected);
+            }
+            if (options.preferNativeForTranslation && status !== 'limited' && chooseLyricCandidate(track, [...candidates.values()].filter(candidate => candidate.synced && hasNativeIndicLyrics(candidate.lines))).selected) return finish();
+            if (decision.selected?.synced && status !== 'limited' && (!options.preferNativeForTranslation || !await needsNativeTranslation(decision.selected, signal))) return finish();
         }
-
-        return _selectBestEntry(pool);
-    } catch (e) {
-        if (e.name === 'AbortError') return null;
-        console.error('[Tunescript] LRCLIB search failed:', e);
-        return null;
+    } catch (error) {
+        if (signal?.aborted || error.name === 'AbortError') throw new DOMException('Song changed', 'AbortError');
+        status = 'unavailable';
+        // A failed search stops broader queries. Keep any collected candidates
+        // and report an incomplete search rather than claiming a catalog miss.
     }
+    return finish();
 }
-
-/**
- * Pick the best lyrics entry from a candidate pool:
- *
- *   1. Native Indic script entries — always preferred when available.
- *      Gemini generates full phonetic romanization + English translation from these,
- *      and the raw text provides authentic content for the "Original script" toggle.
- *      This guarantees all popup display modes work cleanly and prevents
- *      English-translated entries from taking precedence.
- *
- *   2. Latin-script entries — fallback when no native-script entry exists on LRCLIB.
- */
-function _selectBestEntry(pool) {
-    const nativeCandidates = [];
-    const latinCandidates = [];
-
-    for (const entry of pool) {
-        const text = entry.syncedLyrics || entry.plainLyrics || '';
-        if (!text) continue;
-        (_isLatin(text) ? latinCandidates : nativeCandidates).push(entry);
-    }
-
-    // 1. Native Indic script — always preferred
-    for (const entry of nativeCandidates) {
-        const parsed = _parseLrclibResponse(entry);
-        if (parsed) {
-            console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (native script, duration: ${entry.duration || '?'}s)`);
-            return parsed;
-        }
-    }
-
-    // 2. Latin script fallback (when no native entry exists on LRCLIB)
-    for (const entry of latinCandidates) {
-        const parsed = _parseLrclibResponse(entry);
-        if (parsed) {
-            console.log(`[Tunescript] LRCLIB search: matched "${entry.trackName}" by "${entry.artistName}" (latin script fallback, duration: ${entry.duration || '?'}s)`);
-            return parsed;
-        }
-    }
-
-    console.log('[Tunescript] LRCLIB search: results found but none had usable lyrics');
-    return null;
-}
-
-/**
- * Check if lyrics text is predominantly Latin/ASCII script (i.e. already romanized).
- * Strips LRC timestamps before checking. Returns true if ≥70% of letter characters
- * are basic Latin (a-z, A-Z).
- */
-function _isLatin(text) {
-    // Strip LRC timestamps like [00:07.01]
-    const stripped = text.replace(/\[\d+:\d+\.\d+\]/g, '').replace(/\s+/g, '');
-    if (stripped.length === 0) return false;
-    const latinChars = (stripped.match(/[a-zA-Z]/g) || []).length;
-    const totalLetters = (stripped.match(/\p{L}/gu) || []).length;
-    if (totalLetters === 0) return false;
-    return latinChars / totalLetters >= 0.7;
-}
-
-/**
- * Parse an LRCLIB API response object into our internal format.
- */
-function _parseLrclibResponse(data) {
-    if (data.syncedLyrics) {
-        const lines = parseLRC(data.syncedLyrics);
-        console.log(`[Tunescript] LRCLIB: synced lyrics — ${lines.length} lines`);
-        return { synced: true, lines };
-    }
-    if (data.plainLyrics) {
-        const lines = data.plainLyrics
-            .split('\n')
-            .map(text => ({ time: null, text }));
-        console.log(`[Tunescript] LRCLIB: plain lyrics — ${lines.length} lines`);
-        return { synced: false, lines };
-    }
-    return null;
-}
-
-/**
- * Parse an LRC-format string into an array of timed lines.
- * Lines that don't match the [mm:ss.xx] timestamp pattern are dropped.
- *
- * @param {string} lrc - Raw LRC content from LRCLIB API.
- * @returns {Array<{time: number, text: string}>}
- */
-function parseLRC(lrc) {
-    return lrc
-        .split('\n')
-        .map(line => {
-            const match = line.match(/^\[(\d+):(\d+\.\d+)\](.*)/);
-            if (!match) return null;
-            const time = parseInt(match[1]) * 60 + parseFloat(match[2]);
-            return { time, text: match[3].trim() };
-        })
-        .filter(Boolean);
+async function fetchLRCLIB(title, artist, duration = 0, signal = null, details = {}) {
+    const track = { title, artist, duration, ...details };
+    const candidates = await findLRCLIBCandidates(track, signal);
+    const decision = chooseLyricCandidate(track, candidates);
+    if (decision.ambiguous) return { ambiguous: true, candidates: decision.preferred };
+    return decision.selected;
 }

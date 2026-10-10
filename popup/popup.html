@@ -4,9 +4,6 @@
 <head>
   <meta charset="UTF-8">
   <title>tunescript</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="popup.css">
 </head>
 
@@ -19,28 +16,30 @@
       <span class="mz-logo">tunescript</span>
     </div>
     <div class="mz-status-badge">
-      <span class="mz-api-dot" id="apiDot" title="API status"></span>
-      <span class="mz-api-label" id="apiLabel">connecting…</span>
+      <span class="mz-api-dot" id="apiDot"></span>
+      <span class="mz-api-label" id="apiLabel">Loading…</span>
     </div>
   </div>
 
   <!-- ── Lang badge ─────────────────────────────────────────────────── -->
-  <div class="mz-lang-row">
-    <div id="detected-lang" class="lang-badge"></div>
-  </div>
+  <main class="mz-content" tabindex="-1">
+    <div class="mz-song">
+      <span class="mz-section-label">Current song</span>
+      <div id="currentSong" class="mz-song-title">Open a music tab</div>
+      <div id="detected-lang" class="lang-badge" hidden></div>
+    </div>
 
   <!-- ── Toggles Section ────────────────────────────────────────────── -->
   <div class="mz-section">
     <div class="mz-section-label">Display Settings</div>
-    
-    <div class="mz-card">
+    <div class="mz-card mz-settings-grid">
       <div class="setting">
         <div class="mz-label-group">
           <span class="mz-label-main">Romanization</span>
-          <span class="mz-label-sub">Phonetic Roman pronunciation</span>
+          <span class="mz-label-sub">Roman script</span>
         </div>
         <label class="mz-toggle">
-          <input type="checkbox" id="romanization">
+          <input type="checkbox" id="romanization" aria-label="Romanization">
           <span class="mz-track"><span class="mz-thumb"></span></span>
         </label>
       </div>
@@ -48,10 +47,10 @@
       <div class="setting">
         <div class="mz-label-group">
           <span class="mz-label-main">Original script</span>
-          <span class="mz-label-sub">Native script lyrics</span>
+          <span class="mz-label-sub">Native lyrics</span>
         </div>
         <label class="mz-toggle">
-          <input type="checkbox" id="showOriginal">
+          <input type="checkbox" id="showOriginal" aria-label="Original script">
           <span class="mz-track"><span class="mz-thumb"></span></span>
         </label>
       </div>
@@ -59,10 +58,10 @@
       <div class="setting" id="originalFirstRow">
         <div class="mz-label-group">
           <span class="mz-label-main">Original first</span>
-          <span class="mz-label-sub">Place native script above Roman</span>
+          <span class="mz-label-sub">Above Roman</span>
         </div>
         <label class="mz-toggle">
-          <input type="checkbox" id="originalFirst">
+          <input type="checkbox" id="originalFirst" aria-label="Original first">
           <span class="mz-track"><span class="mz-thumb"></span></span>
         </label>
       </div>
@@ -70,10 +69,10 @@
       <div class="setting">
         <div class="mz-label-group">
           <span class="mz-label-main">Translation</span>
-          <span class="mz-label-sub">Line-by-line English translation</span>
+          <span class="mz-label-sub">English meaning</span>
         </div>
         <label class="mz-toggle">
-          <input type="checkbox" id="translation">
+          <input type="checkbox" id="translation" aria-label="Translation">
           <span class="mz-track"><span class="mz-thumb"></span></span>
         </label>
       </div>
@@ -81,10 +80,20 @@
       <div class="setting">
         <div class="mz-label-group">
           <span class="mz-label-main">Auto-open lyrics</span>
-          <span class="mz-label-sub">Open panel automatically on song start</span>
+          <span class="mz-label-sub">On song start</span>
         </div>
         <label class="mz-toggle">
-          <input type="checkbox" id="autoOpenLyrics">
+          <input type="checkbox" id="autoOpenLyrics" aria-label="Auto-open lyrics">
+          <span class="mz-track"><span class="mz-thumb"></span></span>
+        </label>
+      </div>
+      <div class="setting">
+        <div class="mz-label-group">
+          <span class="mz-label-main">Estimated scroll</span>
+          <span class="mz-label-sub">Untimed lyrics</span>
+        </div>
+        <label class="mz-toggle">
+          <input type="checkbox" id="estimatedScrolling" aria-label="Estimated scrolling">
           <span class="mz-track"><span class="mz-thumb"></span></span>
         </label>
       </div>
@@ -93,12 +102,10 @@
 
   <!-- ── Font size Section ──────────────────────────────────────────── -->
   <div class="mz-section">
-    <div class="mz-section-label">Typography</div>
     <div class="mz-card">
       <div class="mz-font-row">
         <div class="mz-label-group">
           <span class="mz-label-main">Lyrics text size</span>
-          <span class="mz-label-sub">Scale panel text size</span>
         </div>
         <div class="mz-font-controls">
           <button id="fontDecrease" class="font-btn" title="Decrease font size">A−</button>
@@ -109,34 +116,27 @@
     </div>
   </div>
 
-  <!-- ── API Key & Cache Section ────────────────────────────────────── -->
   <div class="mz-section">
-    <div class="mz-section-label">AI Engine & Storage</div>
     <div class="mz-card">
-      <div class="api-key-section">
-        <div class="api-header-row">
-          <label for="geminiApiKey">Gemini API Key</label>
-          <a href="https://aistudio.google.com/app/apikey" target="_blank" class="api-link">Get key →</a>
+      <div class="api-key-section" id="geminiSetup">
+        <div class="mz-key-heading">
+          <label class="mz-label-main" for="geminiApiKey">Gemini API key</label>
+          <a id="getGeminiKey" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" aria-label="Get a Gemini API key in Google AI Studio (opens in a new tab)">Get API key ↗</a>
         </div>
-        <div class="input-wrapper">
-          <input type="password" id="geminiApiKey" placeholder="AIzaSy…">
-        </div>
-      </div>
-      <div class="mz-cache-actions">
-        <button id="clearCurrentCache" class="mz-btn-current-cache" title="Clear cache for currently playing track and re-run with AI">
-          <span class="mz-btn-icon">↻</span>
-          <span id="currentSongLabel">Re-transliterate current song</span>
-        </button>
-        <button id="clearCache" class="mz-btn-clear-all" title="Wipe all saved lyrics from cache">Clear all cached lyrics</button>
+        <input id="geminiApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your API key" aria-label="Gemini API key" aria-describedby="geminiStatus">
+        <p id="geminiStatus" role="status"></p>
       </div>
     </div>
   </div>
-
-  <!-- ── Save Button ────────────────────────────────────────────────── -->
-  <div class="mz-save-wrap">
-    <button id="saveBtn">Save Settings</button>
-  </div>
-
+  </main>
+  <footer class="mz-actions">
+    <button id="clearCurrentCache" class="mz-action-primary" disabled>↻ Re-transliterate this song</button>
+    <button id="clearCache" class="mz-action-secondary">Clear all cached lyrics</button>
+    <p id="actionStatus" role="status" aria-live="polite"></p>
+  </footer>
+  <script src="../shared/request.js"></script>
+  <script src="../shared/constants.js"></script>
+  <script src="../shared/cache.js"></script>
   <script src="popup.js"></script>
 </body>
 

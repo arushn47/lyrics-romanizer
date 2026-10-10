@@ -18,7 +18,7 @@ function getMainVideo() {
     for (const v of videos) {
         if (!v.muted) return v;
     }
-    return videos[0] || null;
+    return videos[0] || document.querySelector('audio') || null;
 }
 
 // ── Auto-scroll pause / resume state ────────────────────────────────────────
@@ -26,6 +26,74 @@ let autoScrollPaused = false;
 let isProgrammaticScroll = false;  // true while we're calling scrollIntoView
 let lastActiveIndex = -1;          // remembered so resume can snap back
 let scrollPanelEl = null;          // cached panel ref for the scroll listener
+let scrollParentEl = null;
+let scrollListenerCleanup = null;
+let currentPanelView = null;
+let currentPanelStatus = null;
+let currentSourceInfo = { attribution: '', timingMode: 'unsynced' };
+
+function setLyricsSourceInfo(attribution, timingMode, searchSummary = '') { currentSourceInfo = { attribution, timingMode, searchSummary }; }
+function appendSourceInfo(panel) {
+    const source = document.createElement('div');
+    source.className = 'tunescript-source';
+    const mode = currentSourceInfo.timingMode === 'synced' ? 'Time synced' : currentSourceInfo.timingMode === 'estimated' ? 'Estimated scrolling · timing may differ' : 'Unsynced';
+    source.textContent = [mode, currentSourceInfo.attribution].filter(Boolean).join(' · ');
+    panel.appendChild(source);
+    if (currentSourceInfo.searchSummary) {
+        const note = document.createElement('div');
+        note.className = 'tunescript-source tunescript-search-note';
+        note.textContent = currentSourceInfo.searchSummary;
+        panel.appendChild(note);
+        if (currentSourceInfo.timingMode !== 'synced' && typeof retryCurrentSong === 'function') {
+            const request = typeof currentSongRequest === 'undefined' ? null : currentSongRequest;
+            const retry = document.createElement('button');
+            retry.type = 'button';
+            retry.className = 'tunescript-retry-btn tunescript-timing-retry';
+            retry.textContent = 'Retry timing search';
+            retry.addEventListener('click', () => {
+                if (!retry.disabled && retryCurrentSong(request)) retry.disabled = true;
+            });
+            panel.appendChild(retry);
+        }
+    }
+}
+
+function showMatchPanel(candidates, onSelect) {
+    currentPanelView = { type: 'match', candidates, onSelect };
+    currentPanelStatus = null;
+    let panel = document.getElementById('tunescript-panel');
+    if (!panel) { panel = document.createElement('div'); panel.id = 'tunescript-panel'; }
+    panel.textContent = '';
+    const message = document.createElement('p'); message.className = 'tunescript-error';
+    message.textContent = 'Several lyric versions match. Choose the one you hear:'; panel.appendChild(message);
+    for (const candidate of candidates) {
+        const button = document.createElement('button'); button.className = 'tunescript-match-choice';
+        button.type = 'button';
+        const provider = typeof LYRIC_PROVIDERS !== 'undefined' ? LYRIC_PROVIDERS[candidate.provider]?.name : null;
+        button.textContent = candidate.title + ' — ' + candidate.artist + ' · ' + (candidate.album || 'Album unknown') + (candidate.year ? ' · ' + candidate.year : '') + ' · ' + Math.round(candidate.duration || 0) + 's · ' + (candidate.synced ? 'Time synced' : 'Unsynced') + ' · ' + (provider || candidate.attribution || 'Lyric source');
+        const previewLines = typeof cleanLyricLines === 'function' ? cleanLyricLines(candidate.lines || [], candidate).lines : candidate.lines || [];
+        for (const line of previewLines.filter(line => line.text?.trim()).slice(0, 3)) {
+            const preview = document.createElement('span'); preview.className = 'tunescript-match-preview';
+            const time = candidate.synced && Number.isFinite(line.time) ? Math.floor(line.time / 60) + ':' + String(Math.floor(line.time % 60)).padStart(2, '0') + ' · ' : '';
+            preview.textContent = time + line.text.slice(0, 140);
+            button.appendChild(preview);
+        }
+        button.addEventListener('click', () => { button.disabled = true; onSelect(candidate).catch(() => { button.disabled = false; }); });
+        panel.appendChild(button);
+    }
+    injectPanel(panel);
+}
+const hiddenNativeLyrics = new Map();
+
+function hideNativeLyricsElement(element) {
+    if (!hiddenNativeLyrics.has(element)) hiddenNativeLyrics.set(element, element.style.display);
+    if (element.style.display !== 'none') element.style.display = 'none';
+}
+
+function restoreNativeLyricsElements() {
+    for (const [element, display] of hiddenNativeLyrics) element.style.display = display;
+    hiddenNativeLyrics.clear();
+}
 
 /** Update the resume button arrow direction based on where the active line is. */
 function updateResumeDirection() {
@@ -62,6 +130,8 @@ function showResumeButton() {
     if (!panel || panel.querySelector('.tunescript-loading')) return;
     // Also check Lyrics tab is active (ytmusic.js exposes this)
     if (typeof isLyricsTabActive === 'function' && !isLyricsTabActive()) return;
+    if (typeof isYTMLyricsVisible === 'function' && !isYTMLyricsVisible()) return;
+    if (typeof isSpotifyLyricsVisible === 'function' && !isSpotifyLyricsVisible()) return;
 
     let btn = document.getElementById('tunescript-resume-btn');
     if (btn) {
@@ -98,8 +168,18 @@ function hideResumeButton() {
 /** Attach a scroll listener to the panel (call after each inject). */
 /** Attach scroll/wheel listeners to detect user manual scrolling. */
 function attachScrollListener(panel) {
-    if (scrollPanelEl === panel) return;  // already attached
+    if (scrollPanelEl === panel && scrollParentEl === panel.parentElement) return;
+    detachScrollListeners();
     scrollPanelEl = panel;
+    scrollParentEl = panel.parentElement;
+    const listeners = [];
+    function listen(element, type, callback) {
+        element.addEventListener(type, callback, { passive: true });
+        listeners.push({ element, type, callback });
+    }
+    scrollListenerCleanup = () => {
+        for (const { element, type, callback } of listeners) element.removeEventListener(type, callback);
+    };
 
     function onUserScroll() {
         if (isProgrammaticScroll) return;
@@ -108,7 +188,7 @@ function attachScrollListener(panel) {
     }
 
     // 1. The panel itself may scroll (overflow-y: auto)
-    panel.addEventListener('scroll', onUserScroll, { passive: true });
+    listen(panel, 'scroll', onUserScroll);
 
     // 2. A Polymer ancestor may be the actual scroll container.
     //    Walk up to find it and listen there too.
@@ -116,15 +196,22 @@ function attachScrollListener(panel) {
     while (ancestor && ancestor !== document.body) {
         const style = getComputedStyle(ancestor);
         if (style.overflowY === 'auto' || style.overflowY === 'scroll') {
-            ancestor.addEventListener('scroll', onUserScroll, { passive: true });
+            listen(ancestor, 'scroll', onUserScroll);
             break;
         }
         ancestor = ancestor.parentElement;
     }
 
     // 3. Wheel + touch on the panel always fire even if a parent scrolls.
-    panel.addEventListener('wheel', onUserScroll, { passive: true });
-    panel.addEventListener('touchmove', onUserScroll, { passive: true });
+    listen(panel, 'wheel', onUserScroll);
+    listen(panel, 'touchmove', onUserScroll);
+}
+
+function detachScrollListeners() {
+    scrollListenerCleanup?.();
+    scrollListenerCleanup = null;
+    scrollPanelEl = null;
+    scrollParentEl = null;
 }
 
 /** Reset scroll state on every new song. */
@@ -140,10 +227,12 @@ function _cleanupTier3State() {
         clearInterval(window.__tunescriptTier3Repo);
         window.__tunescriptTier3Repo = null;
     }
-    window.__tunescriptTier3Setup = false;
 }
 
 function showLoadingPanel() {
+    currentPanelView = { type: 'loading' };
+    currentPanelStatus = null;
+    detachScrollListeners();
     const existing = document.getElementById('tunescript-panel');
     if (existing) {
         // If this was a Tier 3 panel, clean up all global state
@@ -191,6 +280,7 @@ function hideLoadingPanel() {
  * @param {'info'|'warn'|'done'} [type='info']
  */
 function showStatusBar(msg, type = 'info') {
+    currentPanelStatus = { msg, type };
     const panel = document.getElementById('tunescript-panel');
     if (!panel) return;
     let bar = panel.querySelector('.tunescript-status');
@@ -205,12 +295,15 @@ function showStatusBar(msg, type = 'info') {
 }
 
 function hideStatusBar() {
+    currentPanelStatus = null;
     document.getElementById('tunescript-panel')
         ?.querySelector('.tunescript-status')
         ?.remove();
 }
 
 function showErrorPanel(msg) {
+    currentPanelView = { type: 'error', message: msg };
+    currentPanelStatus = null;
     let panel = document.getElementById('tunescript-panel');
     if (!panel) {
         panel = document.createElement('div');
@@ -222,11 +315,30 @@ function showErrorPanel(msg) {
     errorDiv.className = 'tunescript-error';
     errorDiv.textContent = msg;
     panel.appendChild(errorDiv);
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'tunescript-retry-btn';
+    retry.textContent = 'Try again';
+    retry.addEventListener('click', () => {
+        if (typeof onYTMSongChange === 'function') onYTMSongChange(false, true);
+        else if (typeof onSpotifySongChange === 'function') onSpotifySongChange(true);
+    });
+    panel.appendChild(retry);
     console.log('[Tunescript] showErrorPanel:', msg);
 }
 
 function renderPanel(processedLines, settings, duration = 0) {
+    if (processedLines.length === 0) {
+        showErrorPanel('Lyrics not available for this song.');
+        return;
+    }
+    currentPanelView = { type: 'lyrics', lines: processedLines, settings, duration };
     let panel = document.getElementById('tunescript-panel');
+    const previousScrollTop = panel?.scrollTop || 0;
+    const previousRows = new Map(Array.from(panel?.querySelectorAll('.tunescript-line') || []).map(row => [row.dataset.lineId, row]));
+    let scrollAncestor = panel?.parentElement;
+    while (scrollAncestor && scrollAncestor !== document.body && !['auto', 'scroll'].includes(getComputedStyle(scrollAncestor).overflowY)) scrollAncestor = scrollAncestor.parentElement;
+    const previousAncestorScroll = scrollAncestor?.scrollTop || 0;
     if (!panel) {
         panel = document.createElement('div');
         panel.id = 'tunescript-panel';
@@ -241,21 +353,26 @@ function renderPanel(processedLines, settings, duration = 0) {
     panel.style.setProperty('--tunescript-font-scale', (settings.fontSize ?? 100) / 100);
 
     panel.innerHTML = '';
-
-    let linesToRender = processedLines;
-    if (!processedLines.some(l => l.time !== null) && typeof estimateLineTimestamps === 'function') {
-        const video = getMainVideo();
-        const videoDuration = video && video.duration > 0 && isFinite(video.duration) ? video.duration : 0;
-        const estDuration = (typeof duration === 'number' && duration > 0) ? duration : videoDuration;
-        if (estDuration > 0) {
-            linesToRender = estimateLineTimestamps(processedLines, estDuration);
-        }
+    appendSourceInfo(panel);
+    if ((!settings.romanization && !settings.showOriginal && !settings.translation) ||
+        (!settings.romanization && !settings.showOriginal && !processedLines.some(line => line.translation))) {
+        const notice = document.createElement('p'); notice.className = 'tunescript-error';
+        notice.textContent = 'Turn on pronunciation or original lyrics in TuneScript settings to read along. Translation may still be unavailable.';
+        panel.appendChild(notice); return;
     }
 
+    const linesToRender = processedLines;
+
     linesToRender.forEach((line, i) => {
+        const lineId = line.id || String(i);
+        const renderKey = JSON.stringify([line.original, line.romanized, line.translation, line.time, line.isEstimated, settings.romanization, settings.showOriginal, settings.originalFirst, settings.translation]);
+        const previous = previousRows.get(lineId);
+        if (previous?.dataset.renderKey === renderKey) { panel.appendChild(previous); return; }
         const lineEl = document.createElement('div');
         lineEl.className = 'tunescript-line';
         lineEl.dataset.index = i;
+        lineEl.dataset.lineId = lineId;
+        lineEl.dataset.renderKey = renderKey;
 
         // Instrumental / music-only lines have no lyric text at all.
         // Render a 🎶 symbol so the sync highlight still works visually.
@@ -267,15 +384,19 @@ function renderPanel(processedLines, settings, duration = 0) {
             sym.textContent = '🎶';
             lineEl.appendChild(sym);
         } else {
-            const firstText = settings.originalFirst ? line.original : line.romanized;
-            const secondText = settings.originalFirst ? line.romanized : line.original;
-            const firstClass = settings.originalFirst ? 'tunescript-original' : 'tunescript-romanized';
-            const secondClass = settings.originalFirst ? 'tunescript-romanized' : 'tunescript-original';
+            const addOriginal = () => {
+                if (!settings.showOriginal) return;
+                const original = document.createElement('p'); original.className = 'tunescript-original';
+                original.setAttribute('dir', 'auto');
+                original.textContent = line.original; lineEl.appendChild(original);
+            };
+            if (settings.originalFirst) addOriginal();
 
             if (settings.romanization) {
                 const r = document.createElement('p');
-                r.className = firstClass;
-                r.textContent = firstText;
+                r.className = 'tunescript-romanized';
+                r.setAttribute('dir', 'ltr');
+                r.textContent = line.romanized;
                 lineEl.appendChild(r);
             }
 
@@ -288,22 +409,22 @@ function renderPanel(processedLines, settings, duration = 0) {
                 if (!isAlreadyEnglish) {
                     const t = document.createElement('p');
                     t.className = 'tunescript-translation';
+                    t.setAttribute('dir', 'ltr');
                     t.textContent = translationText;
                     lineEl.appendChild(t);
                 }
             }
 
-            if (settings.showOriginal) {
-                const o = document.createElement('p');
-                o.className = secondClass;
-                o.textContent = secondText;
-                lineEl.appendChild(o);
-            }
+            if (!settings.originalFirst) addOriginal();
         }
 
         // Click-to-seek: clicking a timed line jumps playback to that timestamp
-        if (line.time !== null) {
+        if (line.time !== null && !line.isEstimated) {
             lineEl.classList.add('tunescript-seekable');
+            lineEl.setAttribute('role', 'button');
+            lineEl.setAttribute('tabindex', '0');
+            lineEl.setAttribute('aria-label', 'Seek to ' + Math.floor(line.time / 60) + ':' + String(Math.floor(line.time % 60)).padStart(2, '0') + ' ' + (line.romanized || line.original || 'Instrumental'));
+            lineEl.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); lineEl.click(); } });
             lineEl.addEventListener('click', (e) => {
                 e.stopPropagation();
                 e.preventDefault();
@@ -313,12 +434,9 @@ function renderPanel(processedLines, settings, duration = 0) {
                     // Passes track-relative line.time directly (e.g. 122.25s) —
                     // YTM's movie_player handles buffering, gapless stream, and scrubbing natively.
                     console.log(`[Tunescript] 🎯 Click-to-seek (YTM native): line ${i} (${line.time.toFixed(2)}s)`);
-                    window.dispatchEvent(new CustomEvent('tunescript-seek', {
-                        detail: {
-                            time: line.time,
-                            duration: (typeof duration === 'number' && duration > 0) ? duration : 0
-                        }
-                    }));
+                    if (typeof seekPlaybackTime === 'function') seekPlaybackTime(line.time, duration).then(ok => {
+                        if (!ok && panel.isConnected) showStatusBar('Seeking is unavailable while the player is changing. Try again.', 'warn');
+                    });
                 } else {
                     // Spotify: direct video.currentTime assignment with duration clamp
                     const video = getMainVideo();
@@ -329,6 +447,9 @@ function renderPanel(processedLines, settings, duration = 0) {
                         }
                         video.currentTime = seekTarget;
                         console.log(`[Tunescript] 🎯 Click-to-seek (Spotify): line ${i} (${seekTarget.toFixed(2)}s)`);
+                    } else {
+                        showStatusBar('Seeking is unavailable in this player. Use its playback controls.', 'warn');
+                        return;
                     }
                 }
 
@@ -343,6 +464,9 @@ function renderPanel(processedLines, settings, duration = 0) {
 
     console.log(`[Tunescript] renderPanel: ${processedLines.length} lines rendered`);
     attachScrollListener(panel);
+    if (autoScrollPaused) panel.scrollTop = previousScrollTop;
+    if (autoScrollPaused && scrollAncestor?.isConnected) scrollAncestor.scrollTop = previousAncestorScroll;
+    if (lastActiveIndex >= 0) setActiveLine(lastActiveIndex);
 }
 
 /**
@@ -397,6 +521,53 @@ function setActiveLine(index) {
 
 let injectInterval = null;
 
+/** Discard pending insertion of a panel belonging to a previous song. */
+function clearLyricsPanel({ forgetContent = false } = {}) {
+    if (injectInterval) {
+        clearInterval(injectInterval);
+        injectInterval = null;
+    }
+    _cleanupTier3State();
+    detachScrollListeners();
+    document.querySelector('ytmusic-player-page')?.classList.remove('tunescript-lyrics-visible');
+    document.getElementById('tunescript-panel')?.remove();
+    hideResumeButton();
+    restoreNativeLyricsElements();
+    if (forgetContent) {
+        currentPanelView = null;
+        currentPanelStatus = null;
+        currentSourceInfo = { attribution: '', timingMode: 'unsynced' };
+    }
+}
+
+/** Restore the latest view after the host removes it, without refetching lyrics/AI. */
+function restoreLyricsPanel() {
+    const view = currentPanelView;
+    const status = currentPanelStatus;
+    if (!view) return false;
+    if (view.type === 'lyrics') {
+        renderPanel(view.lines, view.settings, view.duration);
+        if (lastActiveIndex >= 0) setActiveLine(lastActiveIndex);
+    } else if (view.type === 'loading') {
+        showLoadingPanel();
+    } else if (view.type === 'match') {
+        showMatchPanel(view.candidates, view.onSelect);
+    } else {
+        showErrorPanel(view.message);
+    }
+    if (status) showStatusBar(status.msg, status.type);
+    return true;
+}
+
+function resetOverlayPlacement(panel) {
+    if (panel.dataset.tier3 !== 'true') return;
+    _cleanupTier3State();
+    delete panel.dataset.tier3;
+    for (const property of ['position', 'top', 'left', 'width', 'height', 'overflow-y', 'z-index', 'background', 'display']) {
+        panel.style.removeProperty(property);
+    }
+}
+
 function injectPanel(panel) {
     if (injectInterval) clearInterval(injectInterval);
 
@@ -418,38 +589,19 @@ function injectPanel(panel) {
     }
 }
 
-/**
- * Set up click listener via event delegation so tab switching
- * works even after Polymer re-renders the tab elements.
- */
-function _setupTier3TabListeners(panel, _unused) {
-    if (window.__tunescriptTier3Setup) return;
-    window.__tunescriptTier3Setup = true;
-
-    document.body.addEventListener('click', (e) => {
-        const tab = e.target.closest('tp-yt-paper-tab');
-        if (!tab) return;
-
-        const p = document.getElementById('tunescript-panel');
-        if (!p || p.dataset.tier3 !== 'true') return;
-
-        const isLyrics = tab.textContent.trim().toLowerCase() === 'lyrics';
-        p.style.setProperty('display', isLyrics ? 'block' : 'none', 'important');
-    });
-    console.log('[Tunescript] Tier 3 tab listener attached (event delegation)');
-}
-
 function _injectPanelCore(panel) {
     // ── Spotify ───────────────────────────────────────────────────────────────
     const spotifyContainer = document.querySelector('[data-testid="lyrics-container"]');
     if (spotifyContainer) {
+        if (typeof isSpotifyLyricsVisible === 'function' && !isSpotifyLyricsVisible()) return false;
         if (!spotifyContainer.parentNode.contains(panel)) {
             console.log('[Tunescript] injectPanel: replacing Spotify lyrics container');
-            spotifyContainer.style.visibility = 'hidden';
             spotifyContainer.parentNode.insertBefore(panel, spotifyContainer.nextSibling);
         }
+        hideNativeLyricsElement(spotifyContainer);
         return true;
     }
+    if (location.hostname.includes('open.spotify.com')) return false;
 
     // ── YT Music ──────────────────────────────────────────────────────────────
     // YTM uses Polymer web components — inserting a foreign <div> INSIDE a
@@ -467,36 +619,39 @@ function _injectPanelCore(panel) {
     const isYTM = location.hostname.includes('music.youtube.com');
 
     if (isYTM) {
-        // Always hide ALL native lyrics elements on every injection call.
-        // This prevents native lyrics from reappearing after YTM re-renders.
-        document.querySelectorAll('ytmusic-description-shelf-renderer').forEach(el => {
-            el.style.display = 'none';
-        });
+        if (typeof isYTMLyricsVisible !== 'function' || !isYTMLyricsVisible()) return false;
+        const playerPage = document.querySelector('ytmusic-player-page');
+        playerPage.classList.add('tunescript-lyrics-visible');
 
         // Tier 1: Hide the description shelf and inject beside it
-        const descShelf = document.querySelector('ytmusic-description-shelf-renderer');
+        const descShelf = playerPage.querySelector('ytmusic-description-shelf-renderer');
         if (descShelf && descShelf.parentNode) {
+            resetOverlayPlacement(panel);
+            panel.style.removeProperty('display');
             // Only move the panel if it isn't already a sibling
             const alreadySibling = panel.parentNode === descShelf.parentNode && panel.isConnected;
             if (!alreadySibling) {
                 console.log('[Tunescript] injectPanel: hiding YTM description-shelf, injecting panel as sibling');
                 descShelf.parentNode.insertBefore(panel, descShelf);
             }
+            hideNativeLyricsElement(descShelf);
             return true;
         }
 
         // Tier 2: The section-list-renderer for the LYRICS tab specifically.
         // IMPORTANT: Only match the lyrics-specific page-type to avoid
         // accidentally injecting into the UP NEXT or RELATED tabs.
-        const sectionList = document.querySelector(
+        const sectionList = playerPage.querySelector(
             'ytmusic-section-list-renderer[page-type="MUSIC_PAGE_TYPE_TRACK_LYRICS"]'
         );
         if (sectionList) {
+            resetOverlayPlacement(panel);
+            panel.style.removeProperty('display');
             if (!sectionList.contains(panel)) {
                 console.log('[Tunescript] injectPanel: injecting into YTM lyrics section-list');
                 // Hide existing children (they're Polymer components too)
                 Array.from(sectionList.children).forEach(child => {
-                    if (child !== panel) child.style.display = 'none';
+                    if (child !== panel) hideNativeLyricsElement(child);
                 });
                 sectionList.prepend(panel);
             }
@@ -506,10 +661,10 @@ function _injectPanelCore(panel) {
         // Tier 3: YTM has no native lyrics and no usable container.
         // Polymer purges foreign nodes from its components, so we inject
         // into document.body as a fixed overlay positioned over the tab area.
-        const tabRenderer = document.querySelector('ytmusic-player-page ytmusic-tab-renderer')
-            || document.querySelector('ytmusic-tab-renderer');
+        const tabRenderer = playerPage.querySelector('ytmusic-tab-renderer');
 
         if (tabRenderer) {
+            panel.style.removeProperty('display');
             if (!document.body.contains(panel) || panel.parentElement !== document.body) {
                 console.log('[Tunescript] injectPanel: Tier 3 — body overlay matching tab-renderer position');
                 panel.dataset.tier3 = 'true';
@@ -541,7 +696,6 @@ function _injectPanelCore(panel) {
                 ].join(';');
                 document.body.appendChild(panel);
 
-                _setupTier3TabListeners(panel, null);
                 _startTier3Repositioner(panel, tabRenderer);
             }
             return true;
